@@ -1,0 +1,149 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PLAYER
+  ADMIN
+}
+
+enum Lang {
+  th
+  en
+}
+
+enum Category { 
+  HEALTH
+  COGNITION
+  DIGITAL
+  FINANCE
+}
+
+enum QType {
+  MISSING_NUTRIENT
+  NUTRIENT_FROM_IMAGE
+  DISEASE_FROM_IMAGE
+  ILLEGAL_TEXT
+  ODD_ONE_OUT
+  APP_IDENTITY
+  SCAM_TEXT
+  DONT_SHARE
+  ARITHMETIC_TARGET
+  MAX_VALUE_STACK
+}
+
+model User {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  username     String        @unique
+  passwordHash String
+  role         Role          @default(PLAYER)
+  preferredLang Lang         @default(th)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  
+  profile      Profile?
+  sessions     Session[]
+  gameResults  GameResult[]
+  achievements Achievement[]
+}
+
+model Profile {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String   @unique @db.ObjectId
+  displayName  String
+  avatar       String?
+  totalScore   Int      @default(0)
+  gamesPlayed  Int      @default(0)
+  
+  healthMastery    Int @default(0)
+  cognitionMastery Int @default(0)
+  digitalMastery   Int @default(0)
+  financeMastery   Int @default(0)
+  
+user User @relation(fields: [userId], references: [id])
+}
+
+model Session {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @unique @db.ObjectId
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model Question {
+  id           String          @id @default(auto()) @map("_id") @db.ObjectId
+  category     Category
+  type         QType
+  difficulty   Int             @default(1)
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  
+  translations QuestionTranslation[]
+  gameQuestions GameQuestion[]
+}
+
+model QuestionTranslation {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  questionId   String   @db.ObjectId
+  lang         Lang
+  questionText String
+  instruction  String?
+  imageUrl     String?
+  options      String[]
+  correctAnswer String
+  explanation  String?
+  
+  question Question @relation(fields: [questionId], references: [id])
+  
+  @@unique([questionId, lang])
+}
+
+model GameResult {
+  id           String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String         @db.ObjectId
+  category     Category
+  score        Int
+  totalQuestions Int
+  correctAnswers Int
+  timeSpent    Int            
+  completedAt  DateTime       @default(now())
+  
+  user         User           @relation(fields: [userId], references: [id])
+  gameQuestions GameQuestion[]
+}
+
+model GameQuestion {
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
+  gameResultId String     @db.ObjectId
+  questionId   String     @db.ObjectId
+  userAnswer   String?
+  isCorrect    Boolean
+  timeSpent    Int        
+gameResult   GameResult @relation(fields: [gameResultId], references: [id])
+  question     Question   @relation(fields: [questionId], references: [id])
+}
+
+model Achievement {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String   @db.ObjectId
+  type         String   
+  category     Category?
+  unlockedAt   DateTime @default(now())
+  
+  user User @relation(fields: [userId], references: [id])
+}
