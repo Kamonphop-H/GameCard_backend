@@ -1,9 +1,7 @@
 /** @format */
-
-// backend/src/services/websocket.ts
 import { Server as SocketServer } from "socket.io";
 import { Server } from "http";
-import jwt from "jsonwebtoken";
+import { verifyAccessToken } from "../middlewares/security";
 import { prisma } from "../prisma";
 
 export function initWebSocket(server: Server) {
@@ -14,26 +12,37 @@ export function initWebSocket(server: Server) {
     },
   });
 
+  // Authentication middleware
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth.token;
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || "default_secret_change_this") as any;
-      socket.data.userId = decoded.uid;
+      const payload = verifyAccessToken(token);
+
+      const user = await prisma.user.findUnique({
+        where: { id: payload.uid },
+        select: { id: true, username: true, isActive: true },
+      });
+
+      if (!user?.isActive) throw new Error("Invalid user");
+
+      socket.data = { userId: user.id, username: user.username };
       next();
     } catch {
-      next(new Error("Authentication error"));
+      next(new Error("Authentication failed"));
     }
   });
 
   io.on("connection", (socket) => {
-    console.log("User connected:", socket.data.userId);
+    console.log("User connected:", socket.data.username);
 
+    // Join leaderboard room
     socket.on("join-leaderboard", async (category) => {
       socket.join(`leaderboard-${category}`);
       const leaderboard = await getLeaderboard(category);
       socket.emit("leaderboard-update", leaderboard);
     });
 
+    // Handle score updates
     socket.on("score-update", async (data) => {
       await updateUserScore(socket.data.userId, data);
       const leaderboard = await getLeaderboard(data.category);
@@ -41,7 +50,7 @@ export function initWebSocket(server: Server) {
     });
 
     socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.data.userId);
+      console.log("User disconnected:", socket.data.username);
     });
   });
 
@@ -70,8 +79,7 @@ async function getLeaderboard(category: string) {
 }
 
 async function updateUserScore(userId: string, data: any) {
-  // Implementation for updating user score
-  await prisma.gameResult.create({
+  return prisma.gameResult.create({
     data: {
       userId,
       category: data.category,

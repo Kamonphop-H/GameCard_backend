@@ -1,42 +1,45 @@
 /** @format */
-// backend/src/routes/auth.routes.ts
 import { Router } from "express";
-import { z } from "zod";
-import bcrypt from "bcryptjs"; // ใช้ js ก็พอ
 import { prisma } from "../prisma";
-import type { Request, Response } from "express";
-import { generateTokens, authLimiter, validateInput, verifyAccessToken } from "../middlewares/security";
+import {
+  generateTokens,
+  authLimiter,
+  validateInput,
+  verifyAccessToken,
+  verifyRefreshToken,
+  signUpSchema,
+  signInSchema,
+  hashPassword,
+  comparePassword,
+  sanitizeUser,
+} from "../middlewares/security";
 
 const router = Router();
+const IS_PROD = process.env.NODE_ENV === "production";
 
-const signUpSchema = z.object({
-  username: z.string().min(3).max(20),
-  password: z
-    .string()
-    .min(8)
-    .regex(/^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&])/),
-  preferredLang: z.enum(["th", "en"]).optional(),
-});
+// Fixed cookie config for development
+const cookieConfig = {
+  httpOnly: true,
+  sameSite: "lax" as const, // เปลี่ยนจาก "none" เป็น "lax"
+  secure: false, // ต้องเป็น false สำหรับ localhost
+  path: "/",
+  // ไม่ต้องใส่ domain สำหรับ localhost
+};
 
-const signInSchema = z.object({
-  username: z.string().min(1),
-  password: z.string().min(1),
-});
-
+// Sign up
 router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res) => {
   try {
     const { username, password, preferredLang } = req.body;
 
     const existing = await prisma.user.findUnique({ where: { username } });
-    if (existing) return res.status(409).json({ error: "User already exists" });
+    if (existing) return res.status(409).json({ error: "Username already exists" });
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await hashPassword(password);
 
     const user = await prisma.user.create({
       data: {
         username,
         passwordHash,
-        role: "PLAYER",
         preferredLang: preferredLang || "th",
         profile: { create: { displayName: username } },
       },
@@ -49,39 +52,20 @@ router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res
       role: user.role,
     });
 
-    await prisma.session.upsert({
-      where: { userId: user.id },
-      update: {
-        token: refreshToken,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-      create: {
+    await prisma.session.create({
+      data: {
         userId: user.id,
         token: refreshToken,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     });
 
-    // ตั้งคุกกี้ให้ middleware อ่าน (auth_token)
-    const isProd = process.env.NODE_ENV === "production";
-    res.cookie("auth_token", accessToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd,
-      maxAge: 15 * 60 * 1000, // 15 นาที
-      path: "/",
-    });
-    res.cookie("refresh_token", refreshToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: "/",
-    });
+    res.cookie("auth_token", accessToken, { ...cookieConfig, maxAge: 15 * 60 * 1000 });
+    res.cookie("refresh_token", refreshToken, { ...cookieConfig, maxAge: 7 * 24 * 60 * 60 * 1000 });
 
     return res.status(201).json({
-      user: { id: user.id, username: user.username, profile: user.profile },
-      message: "success",
+      user: sanitizeUser(user),
+      message: "Account created successfully",
     });
   } catch (error) {
     console.error("Signup error:", error);
@@ -89,56 +73,75 @@ router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res
   }
 });
 
+// Sign in - FIXED VERSION
 router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res) => {
   try {
     const { username, password } = req.body;
+
+    console.log("=== SIGNIN ATTEMPT ===");
+    console.log("Username:", username);
+
     const user = await prisma.user.findUnique({
       where: { username },
       include: { profile: true },
     });
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+    if (!user || !user.isActive) {
+      console.log("User not found or inactive");
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
 
+    const isValid = await comparePassword(password, user.passwordHash);
+    console.log("Password valid:", isValid);
+
+    if (!isValid) {
+      console.log("Invalid password");
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    // *** ส่วนที่ขาดไป - Generate tokens และ set cookies ***
     const { accessToken, refreshToken } = generateTokens({
       uid: user.id,
       username: user.username,
       role: user.role,
     });
 
-    await prisma.session.upsert({
-      where: { userId: user.id }, // ⚠ ต้องมี unique index
-      update: {
-        token: refreshToken,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-      create: {
+    // Delete old sessions and create new one
+    await prisma.session.deleteMany({
+      where: { userId: user.id },
+    });
+
+    await prisma.session.create({
+      data: {
         userId: user.id,
         token: refreshToken,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     });
 
-    const isProd = process.env.NODE_ENV === "production";
-    res.cookie("auth_token", accessToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd,
-      maxAge: 15 * 60 * 1000,
-      path: "/",
-    });
-    res.cookie("refresh_token", refreshToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: isProd,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: "/",
+    // Update last login
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
     });
 
+    // Set cookies
+    res.cookie("auth_token", accessToken, {
+      ...cookieConfig,
+      maxAge: 15 * 60 * 1000, // 15 minutes
+    });
+    res.cookie("refresh_token", refreshToken, {
+      ...cookieConfig,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    console.log("Sign in successful for:", username);
+    console.log("Cookies set successfully");
+
+    // Return success response
     return res.json({
-      user: { id: user.id, username: user.username, profile: user.profile },
-      message: "success",
+      user: sanitizeUser(user),
+      message: "Sign in successful",
     });
   } catch (error) {
     console.error("Signin error:", error);
@@ -146,40 +149,120 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
   }
 });
 
-router.post("/logout", async (req: Request, res: Response) => {
+// Token refresh
+router.post("/refresh", async (req, res) => {
   try {
-    const refresh = req.cookies?.refresh_token as string | undefined;
+    const refreshToken = req.cookies?.refresh_token;
+    if (!refreshToken) return res.status(401).json({ error: "Refresh token required" });
 
-    if (refresh) {
-      await prisma.session.deleteMany({ where: { token: refresh } });
+    const payload = verifyRefreshToken(refreshToken);
+
+    const session = await prisma.session.findFirst({
+      where: {
+        token: refreshToken,
+        expiresAt: { gt: new Date() },
+      },
+      include: {
+        user: {
+          include: { profile: true },
+        },
+      },
+    });
+
+    if (!session || !session.user.isActive) {
+      return res.status(401).json({ error: "Invalid refresh token" });
     }
 
-    const isProd = process.env.NODE_ENV === "production";
-    res.clearCookie("auth_token", { httpOnly: true, sameSite: "lax", secure: isProd, path: "/" });
-    res.clearCookie("refresh_token", { httpOnly: true, sameSite: "lax", secure: isProd, path: "/" });
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens({
+      uid: session.user.id,
+      username: session.user.username,
+      role: session.user.role,
+    });
 
-    return res.json({ message: "logged out" });
-  } catch (e) {
-    console.error("Logout error:", e);
-    return res.status(500).json({ error: "Internal server error" });
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        token: newRefreshToken,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    res.cookie("auth_token", accessToken, { ...cookieConfig, maxAge: 15 * 60 * 1000 });
+    res.cookie("refresh_token", newRefreshToken, { ...cookieConfig, maxAge: 7 * 24 * 60 * 60 * 1000 });
+
+    return res.json({
+      user: sanitizeUser(session.user),
+      message: "Token refreshed",
+    });
+  } catch (error) {
+    console.error("Token refresh error:", error);
+    return res.status(401).json({ error: "Token refresh failed" });
   }
 });
 
-router.get("/me", async (req: Request, res: Response) => {
+// Logout
+router.post("/logout", async (req, res) => {
   try {
-    const access = req.cookies?.auth_token as string | undefined;
-    if (!access) return res.status(401).json({ error: "Unauthenticated" });
+    const refreshToken = req.cookies?.refresh_token;
 
-    const payload = verifyAccessToken(access); // <— ใช้ของคุณเอง
+    if (refreshToken) {
+      await prisma.session.deleteMany({
+        where: { token: refreshToken },
+      });
+    }
+
+    // Clear cookies without domain for localhost
+    res.clearCookie("auth_token", {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false,
+      path: "/",
+    });
+    res.clearCookie("refresh_token", {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false,
+      path: "/",
+    });
+
+    return res.json({ message: "Logged out successfully" });
+  } catch (error) {
+    // Clear cookies even if error
+    res.clearCookie("auth_token");
+    res.clearCookie("refresh_token");
+    return res.json({ message: "Logged out" });
+  }
+});
+
+router.get("/me", async (req, res) => {
+  try {
+    console.log("=== /me endpoint ===");
+    console.log("Cookies:", req.cookies);
+
+    const token = req.cookies?.auth_token;
+
+    if (!token) {
+      console.log("No auth token found in cookies");
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const payload = verifyAccessToken(token);
+    console.log("Token payload:", { uid: payload.uid, username: payload.username });
+
     const user = await prisma.user.findUnique({
       where: { id: payload.uid },
       include: { profile: true },
     });
-    if (!user) return res.status(401).json({ error: "Unauthenticated" });
 
-    return res.json({ user: { id: user.id, username: user.username, profile: user.profile } });
-  } catch {
-    return res.status(401).json({ error: "Unauthenticated" });
+    if (!user?.isActive) {
+      console.log("User not found or inactive");
+      return res.status(401).json({ error: "User not found" });
+    }
+
+    return res.json({ user: sanitizeUser(user) });
+  } catch (error) {
+    console.error("/me error:", error);
+    return res.status(401).json({ error: "Authentication failed" });
   }
 });
 

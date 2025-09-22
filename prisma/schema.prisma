@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -49,6 +43,8 @@ model User {
   passwordHash String
   role         Role          @default(PLAYER)
   preferredLang Lang         @default(th)
+  isActive     Boolean       @default(true)
+  lastLoginAt  DateTime?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   
@@ -56,6 +52,8 @@ model User {
   sessions     Session[]
   gameResults  GameResult[]
   achievements Achievement[]
+  
+  @@map("users")
 }
 
 model Profile {
@@ -71,17 +69,22 @@ model Profile {
   digitalMastery   Int @default(0)
   financeMastery   Int @default(0)
   
-user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("profiles")
 }
 
 model Session {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  userId    String   @unique @db.ObjectId
+  userId    String   @db.ObjectId
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@map("sessions")
 }
 
 model Question {
@@ -91,10 +94,12 @@ model Question {
   difficulty   Int             @default(1)
   isActive     Boolean         @default(true)
   createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
   
   translations QuestionTranslation[]
   gameQuestions GameQuestion[]
+  
+  @@index([category, isActive])
+  @@map("questions")
 }
 
 model QuestionTranslation {
@@ -102,15 +107,15 @@ model QuestionTranslation {
   questionId   String   @db.ObjectId
   lang         Lang
   questionText String
-  instruction  String?
   imageUrl     String?
   options      String[]
   correctAnswer String
   explanation  String?
   
-  question Question @relation(fields: [questionId], references: [id])
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
   
   @@unique([questionId, lang])
+  @@map("question_translations")
 }
 
 model GameResult {
@@ -123,8 +128,12 @@ model GameResult {
   timeSpent    Int            
   completedAt  DateTime       @default(now())
   
-  user         User           @relation(fields: [userId], references: [id])
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   gameQuestions GameQuestion[]
+  
+  @@index([userId, category])
+  @@index([category, score])
+  @@map("game_results")
 }
 
 model GameQuestion {
@@ -134,8 +143,11 @@ model GameQuestion {
   userAnswer   String?
   isCorrect    Boolean
   timeSpent    Int        
-gameResult   GameResult @relation(fields: [gameResultId], references: [id])
+
+  gameResult   GameResult @relation(fields: [gameResultId], references: [id], onDelete: Cascade)
   question     Question   @relation(fields: [questionId], references: [id])
+  
+  @@map("game_questions")
 }
 
 model Achievement {
@@ -143,7 +155,11 @@ model Achievement {
   userId       String   @db.ObjectId
   type         String   
   category     Category?
+  isCompleted  Boolean  @default(false)
   unlockedAt   DateTime @default(now())
   
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, type, category])
+  @@map("achievements")
 }
