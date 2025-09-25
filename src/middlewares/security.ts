@@ -140,6 +140,39 @@ export const sanitizeUser = (user: any) => {
   return sanitized;
 };
 
+export const requireAuth = async (req: Request & { auth?: any }, res: Response, next: NextFunction) => {
+  try {
+    const token = req.cookies?.auth_token || req.headers.authorization?.replace("Bearer ", "");
+
+    if (!token) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const payload = verifyAccessToken(token);
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.uid },
+      select: { id: true, username: true, role: true, preferredLang: true, isActive: true },
+    });
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({ error: "Invalid user" });
+    }
+
+    // Set auth data for routes
+    req.auth = {
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      lang: user.preferredLang,
+    };
+
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: "Authentication failed" });
+  }
+};
+
 // Fixed CORS options for development
 export const corsOptions = {
   origin: function (origin: any, callback: any) {

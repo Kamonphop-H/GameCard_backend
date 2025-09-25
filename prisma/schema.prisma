@@ -37,6 +37,13 @@ enum QType {
   MAX_VALUE_STACK
 }
 
+enum InputType {
+  TEXT                // คำตอบแบบพิมพ์ (อาจมีหลายคำตอบที่ถูก)
+  MULTIPLE_CHOICE_4   // ตัวเลือก 4 ข้อ  
+  MULTIPLE_CHOICE_3   // ตัวเลือก 3 ข้อ
+  CALCULATION         // คำนวณสมการ (เช่น บวกเลขให้ได้ตามเป้าหมาย)
+}
+
 model User {
   id           String        @id @default(auto()) @map("_id") @db.ObjectId
   username     String        @unique
@@ -91,6 +98,7 @@ model Question {
   id           String          @id @default(auto()) @map("_id") @db.ObjectId
   category     Category
   type         QType
+  inputType    InputType       // เพิ่ม field นี้
   difficulty   Int             @default(1)
   isActive     Boolean         @default(true)
   createdAt    DateTime        @default(now())
@@ -103,14 +111,15 @@ model Question {
 }
 
 model QuestionTranslation {
-  id           String   @id @default(auto()) @map("_id") @db.ObjectId
-  questionId   String   @db.ObjectId
-  lang         Lang
-  questionText String
-  imageUrl     String?
-  options      String[]
-  correctAnswer String
-  explanation  String?
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  questionId     String   @db.ObjectId
+  lang           Lang
+  questionText   String
+  imageUrl       String?
+  options        String[]    // สำหรับ multiple choice
+  correctAnswers String[]    // เปลี่ยนเป็น array เพื่อรองรับหลายคำตอบ
+  targetValue    Int?        // สำหรับคำถามแบบคำนวณ (เช่น บวกให้ได้ 10)
+  explanation    String?
   
   question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
   
