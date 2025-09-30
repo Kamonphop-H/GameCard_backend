@@ -1,38 +1,74 @@
 /** @format */
+
 import { Router } from "express";
 import { prisma } from "../prisma";
 import {
   generateTokens,
   authLimiter,
-  validateInput,
   verifyAccessToken,
   verifyRefreshToken,
-  signUpSchema,
-  signInSchema,
   hashPassword,
   comparePassword,
   sanitizeUser,
 } from "../middlewares/security";
+import { z } from "zod";
 
 const router = Router();
-const IS_PROD = process.env.NODE_ENV === "production";
 
-// Fixed cookie config for development
-const cookieConfig = {
-  httpOnly: true,
-  sameSite: "lax" as const, // เปลี่ยนจาก "none" เป็น "lax"
-  secure: false, // ต้องเป็น false สำหรับ localhost
-  path: "/",
-  // ไม่ต้องใส่ domain สำหรับ localhost
+// ⭐ แก้ไข: validation schema ที่เรียบง่ายและชัดเจน
+const signUpSchema = z.object({
+  username: z
+    .string()
+    .min(3, "ชื่อผู้ใช้ต้องมีอย่างน้อย 3 ตัวอักษร")
+    .max(20, "ชื่อผู้ใช้ต้องไม่เกิน 20 ตัวอักษร")
+    .regex(/^[a-zA-Z0-9_-]+$/, "ชื่อผู้ใช้ใช้ได้เฉพาะ a-z, A-Z, 0-9, _, -"),
+  password: z.string().min(6, "รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"),
+  preferredLang: z.enum(["th", "en"]).optional().default("th"),
+});
+
+const signInSchema = z.object({
+  username: z.string().min(1, "กรุณากรอกชื่อผู้ใช้"),
+  password: z.string().min(1, "กรุณากรอกรหัสผ่าน"),
+});
+
+// ⭐ แก้ไข: middleware ที่ให้ error message ชัดเจน
+const validateInput = (schema: z.ZodSchema) => {
+  return (req: any, res: any, next: any) => {
+    try {
+      schema.parse(req.body);
+      next();
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const firstError = error.errors[0];
+        return res.status(400).json({
+          error: firstError.message,
+          field: firstError.path.join("."),
+        });
+      }
+      return res.status(400).json({ error: "ข้อมูลไม่ถูกต้อง" });
+    }
+  };
 };
 
-// Sign up
+const cookieConfig = {
+  httpOnly: true,
+  sameSite: "lax" as const,
+  secure: false,
+  path: "/",
+};
+
+// ⭐ Sign up - ปรับปรุง
 router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res) => {
   try {
     const { username, password, preferredLang } = req.body;
 
     const existing = await prisma.user.findUnique({ where: { username } });
-    if (existing) return res.status(409).json({ error: "Username already exists" });
+    if (existing) {
+      return res.status(409).json({
+        error: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว",
+        field: "username",
+      });
+    }
 
     const passwordHash = await hashPassword(password);
 
@@ -65,21 +101,18 @@ router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res
 
     return res.status(201).json({
       user: sanitizeUser(user),
-      message: "Account created successfully",
+      message: "สร้างบัญชีสำเร็จ! กำลังเข้าสู่ระบบ...",
     });
   } catch (error) {
     console.error("Signup error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "เกิดข้อผิดพลาดในการสร้างบัญชี กรุณาลองใหม่" });
   }
 });
 
-// Sign in - FIXED VERSION
+// ⭐ Sign in - ปรับปรุง
 router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res) => {
   try {
     const { username, password } = req.body;
-
-    console.log("=== SIGNIN ATTEMPT ===");
-    console.log("Username:", username);
 
     const user = await prisma.user.findUnique({
       where: { username },
@@ -87,30 +120,26 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
     });
 
     if (!user || !user.isActive) {
-      console.log("User not found or inactive");
-      return res.status(401).json({ error: "Invalid credentials" });
+      return res.status(401).json({
+        error: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+      });
     }
 
     const isValid = await comparePassword(password, user.passwordHash);
-    console.log("Password valid:", isValid);
 
     if (!isValid) {
-      console.log("Invalid password");
-      return res.status(401).json({ error: "Invalid credentials" });
+      return res.status(401).json({
+        error: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+      });
     }
 
-    // *** ส่วนที่ขาดไป - Generate tokens และ set cookies ***
     const { accessToken, refreshToken } = generateTokens({
       uid: user.id,
       username: user.username,
       role: user.role,
     });
 
-    // Delete old sessions and create new one
-    await prisma.session.deleteMany({
-      where: { userId: user.id },
-    });
-
+    await prisma.session.deleteMany({ where: { userId: user.id } });
     await prisma.session.create({
       data: {
         userId: user.id,
@@ -119,33 +148,21 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
       },
     });
 
-    // Update last login
     await prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
     });
 
-    // Set cookies
-    res.cookie("auth_token", accessToken, {
-      ...cookieConfig,
-      maxAge: 15 * 60 * 1000, // 15 minutes
-    });
-    res.cookie("refresh_token", refreshToken, {
-      ...cookieConfig,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
+    res.cookie("auth_token", accessToken, { ...cookieConfig, maxAge: 15 * 60 * 1000 });
+    res.cookie("refresh_token", refreshToken, { ...cookieConfig, maxAge: 7 * 24 * 60 * 60 * 1000 });
 
-    console.log("Sign in successful for:", username);
-    console.log("Cookies set successfully");
-
-    // Return success response
     return res.json({
       user: sanitizeUser(user),
-      message: "Sign in successful",
+      message: "เข้าสู่ระบบสำเร็จ",
     });
   } catch (error) {
     console.error("Signin error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "เกิดข้อผิดพลาดในการเข้าสู่ระบบ" });
   }
 });
 
@@ -211,43 +228,27 @@ router.post("/logout", async (req, res) => {
       });
     }
 
-    // Clear cookies without domain for localhost
-    res.clearCookie("auth_token", {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-      path: "/",
-    });
-    res.clearCookie("refresh_token", {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-      path: "/",
-    });
+    res.clearCookie("auth_token", cookieConfig);
+    res.clearCookie("refresh_token", cookieConfig);
 
-    return res.json({ message: "Logged out successfully" });
+    return res.json({ message: "ออกจากระบบสำเร็จ" });
   } catch (error) {
-    // Clear cookies even if error
     res.clearCookie("auth_token");
     res.clearCookie("refresh_token");
-    return res.json({ message: "Logged out" });
+    return res.json({ message: "ออกจากระบบสำเร็จ" });
   }
 });
 
+// Get current user
 router.get("/me", async (req, res) => {
   try {
-    console.log("=== /me endpoint ===");
-    console.log("Cookies:", req.cookies);
-
     const token = req.cookies?.auth_token;
 
     if (!token) {
-      console.log("No auth token found in cookies");
       return res.status(401).json({ error: "Authentication required" });
     }
 
     const payload = verifyAccessToken(token);
-    console.log("Token payload:", { uid: payload.uid, username: payload.username });
 
     const user = await prisma.user.findUnique({
       where: { id: payload.uid },
@@ -255,7 +256,6 @@ router.get("/me", async (req, res) => {
     });
 
     if (!user?.isActive) {
-      console.log("User not found or inactive");
       return res.status(401).json({ error: "User not found" });
     }
 

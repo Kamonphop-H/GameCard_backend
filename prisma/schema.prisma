@@ -38,10 +38,10 @@ enum QType {
 }
 
 enum InputType {
-  TEXT                // คำตอบแบบพิมพ์ (อาจมีหลายคำตอบที่ถูก)
-  MULTIPLE_CHOICE_4   // ตัวเลือก 4 ข้อ  
-  MULTIPLE_CHOICE_3   // ตัวเลือก 3 ข้อ
-  CALCULATION         // คำนวณสมการ (เช่น บวกเลขให้ได้ตามเป้าหมาย)
+  TEXT
+  MULTIPLE_CHOICE_4
+  MULTIPLE_CHOICE_3
+  CALCULATION
 }
 
 model User {
@@ -98,7 +98,7 @@ model Question {
   id           String          @id @default(auto()) @map("_id") @db.ObjectId
   category     Category
   type         QType
-  inputType    InputType       // เพิ่ม field นี้
+  inputType    InputType
   difficulty   Int             @default(1)
   isActive     Boolean         @default(true)
   createdAt    DateTime        @default(now())
@@ -116,9 +116,9 @@ model QuestionTranslation {
   lang           Lang
   questionText   String
   imageUrl       String?
-  options        String[]    // สำหรับ multiple choice
-  correctAnswers String[]    // เปลี่ยนเป็น array เพื่อรองรับหลายคำตอบ
-  targetValue    Int?        // สำหรับคำถามแบบคำนวณ (เช่น บวกให้ได้ 10)
+  options        String[]
+  correctAnswers String[]
+  targetValue    Int?
   explanation    String?
   
   question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
@@ -128,17 +128,18 @@ model QuestionTranslation {
 }
 
 model GameResult {
-  id           String         @id @default(auto()) @map("_id") @db.ObjectId
-  userId       String         @db.ObjectId
-  category     Category
-  score        Int
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String         @db.ObjectId
+  category       Category
+  score          Int            @default(0)
   totalQuestions Int
-  correctAnswers Int
-  timeSpent    Int            
-  completedAt  DateTime       @default(now())
+  correctAnswers Int            @default(0)
+  timeSpent      Int            @default(0)
+  isCompleted    Boolean        @default(false)  // ⭐ เพิ่ม field นี้
+  completedAt    DateTime       @default(now())
   
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  gameQuestions GameQuestion[]
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gameQuestions  GameQuestion[]
   
   @@index([userId, category])
   @@index([category, score])
