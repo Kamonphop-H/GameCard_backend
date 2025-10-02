@@ -32,10 +32,10 @@ class FileService {
         bucketName: "questionImages",
       });
 
-      console.log("✅ GridFS initialized successfully");
+      console.log("GridFS initialized successfully");
       return true;
     } catch (error) {
-      console.error("❌ Failed to initialize GridFS:", error);
+      console.error("Failed to initialize GridFS:", error);
       throw error;
     }
   }

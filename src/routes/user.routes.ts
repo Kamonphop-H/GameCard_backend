@@ -1,67 +1,132 @@
 /** @format */
-
-// src/routes/question.routes.ts - เพิ่ม endpoint validate-answer
-
 import { Router } from "express";
 import { prisma } from "../prisma";
-import { authenticateToken } from "../middlewares/security";
-import { AnswerValidator } from "../services/answerValidator";
-import { questionTypes } from "../config/questionTypes";
+import { requireAuth } from "../middlewares/security";
 
 const router = Router();
-router.post("/validate-answer", authenticateToken, async (req, res) => {
-  try {
-    const { questionId, userAnswer, lang = "th" } = req.body;
 
-    // ดึงข้อมูลคำถาม
-    const question = await prisma.question.findUnique({
-      where: { id: questionId },
-      include: {
-        translations: {
-          where: { lang },
-        },
+/** GET /api/user/stats - ⭐ ดึงข้อมูลจริงจากฐานข้อมูล */
+router.get("/stats", requireAuth, async (req, res) => {
+  try {
+    const userId = req.auth!.userId;
+
+    // ดึงข้อมูล Profile
+    const profile = await prisma.profile.findUnique({
+      where: { userId },
+      select: {
+        totalScore: true,
+        gamesPlayed: true,
+        healthMastery: true,
+        cognitionMastery: true,
+        digitalMastery: true,
+        financeMastery: true,
       },
     });
 
-    if (!question || !question.translations[0]) {
-      return res.status(404).json({ error: "Question not found" });
+    if (!profile) {
+      // สร้าง profile ใหม่ถ้ายังไม่มี
+      const newProfile = await prisma.profile.create({
+        data: {
+          userId,
+          displayName: req.auth!.username,
+          totalScore: 0,
+          gamesPlayed: 0,
+          healthMastery: 0,
+          cognitionMastery: 0,
+          digitalMastery: 0,
+          financeMastery: 0,
+        },
+      });
+
+      return res.json({
+        totalScore: 0,
+        gamesPlayed: 0,
+        healthMastery: 0,
+        cognitionMastery: 0,
+        digitalMastery: 0,
+        financeMastery: 0,
+        hasPlayedMixed: false,
+      });
     }
 
-    const translation = question.translations[0];
-    const questionConfig = questionTypes[question.category]?.find((qt) => qt.id === question.type);
+    // ⭐ เช็คว่าเคยเล่น MIXED หรือยัง (จาก Achievement)
+    const mixedAchievement = await prisma.achievement.findFirst({
+      where: {
+        userId,
+        type: "MIXED_UNLOCK",
+        isCompleted: true,
+      },
+    });
 
-    let isCorrect = false;
+    const hasPlayedMixed = !!mixedAchievement;
 
-    // ตรวจสอบตามประเภท input
-    switch (question.inputType) {
-      case "TEXT":
-        isCorrect = AnswerValidator.validateTextAnswer(
-          userAnswer,
-          translation.correctAnswers,
-          questionConfig?.multipleAnswers || false
-        );
-        break;
+    res.json({
+      totalScore: profile.totalScore,
+      gamesPlayed: profile.gamesPlayed,
+      healthMastery: profile.healthMastery,
+      cognitionMastery: profile.cognitionMastery,
+      digitalMastery: profile.digitalMastery,
+      financeMastery: profile.financeMastery,
+      hasPlayedMixed,
+    });
+  } catch (error) {
+    console.error("Get stats error:", error);
+    res.status(500).json({ error: "Failed to load statistics" });
+  }
+});
 
-      case "CALCULATION":
-        if (translation.targetValue !== null) {
-          isCorrect = AnswerValidator.validateCalculation(userAnswer, translation.targetValue);
-        }
-        break;
+/** GET /api/user/profile - ดึงข้อมูล Profile เต็ม */
+router.get("/profile", requireAuth, async (req, res) => {
+  try {
+    const userId = req.auth!.userId;
 
-      case "MULTIPLE_CHOICE_3":
-      case "MULTIPLE_CHOICE_4":
-        isCorrect = AnswerValidator.validateMultipleChoice(userAnswer, translation.correctAnswers[0]);
-        break;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        profile: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
     }
 
     res.json({
-      isCorrect,
-      correctAnswers: translation.correctAnswers,
-      explanation: translation.explanation,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        preferredLang: user.preferredLang,
+        profile: user.profile,
+      },
     });
   } catch (error) {
-    console.error("Validate answer error:", error);
-    res.status(500).json({ error: "Failed to validate answer" });
+    console.error("Get profile error:", error);
+    res.status(500).json({ error: "Failed to load profile" });
+  }
+});
+
+/** PATCH /api/user/profile - อัพเดท Profile */
+router.patch("/profile", requireAuth, async (req, res) => {
+  try {
+    const userId = req.auth!.userId;
+    const { displayName, avatar } = req.body;
+
+    const updated = await prisma.profile.update({
+      where: { userId },
+      data: {
+        ...(displayName && { displayName }),
+        ...(avatar && { avatar }),
+      },
+    });
+
+    res.json({
+      message: "Profile updated successfully",
+      profile: updated,
+    });
+  } catch (error) {
+    console.error("Update profile error:", error);
+    res.status(500).json({ error: "Failed to update profile" });
   }
 });
 

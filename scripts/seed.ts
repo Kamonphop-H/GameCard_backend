@@ -20,7 +20,7 @@ async function main() {
       isActive: true,
     },
   });
-  console.log("✅ Admin user created");
+  console.log("Admin user created");
 
   // Create test player
   const playerPassword = await hashPassword("Player@123");
@@ -35,7 +35,7 @@ async function main() {
       isActive: true,
     },
   });
-  console.log("✅ Test player created");
+  console.log("Test player created");
 
   // Sample questions for each category
   const sampleQuestions = [
@@ -253,7 +253,7 @@ async function main() {
     questionCount++;
   }
 
-  console.log(`✅ Created ${questionCount} sample questions`);
+  console.log(`Created ${questionCount} sample questions`);
 
   // Create sample game results for leaderboard
   const categories = ["HEALTH", "COGNITION", "DIGITAL", "FINANCE"] as const;
@@ -276,10 +276,10 @@ async function main() {
     });
   }
 
-  console.log("✅ Created sample game results");
+  console.log("Created sample game results");
 
-  console.log("\n🎉 Database seeded successfully!");
-  console.log("\n📝 Login credentials:");
+  console.log("\nDatabase seeded successfully!");
+  console.log("\nLogin credentials:");
   console.log("Admin: username=admin, password=Admin@123456");
   console.log("Player: username=player1, password=Player@123");
 }

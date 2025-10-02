@@ -71,15 +71,26 @@ export const initializeFileService = async () => {
 // Get admin statistics
 router.get("/stats", authenticateToken, adminOnly, async (req, res) => {
   try {
-    const [totalQuestions, activeQuestions, categoryStats, storageStats] = await Promise.all([
-      prisma.question.count(),
-      prisma.question.count({ where: { isActive: true } }),
-      prisma.question.groupBy({
-        by: ["category"],
-        _count: true,
-      }),
-      fileService.getStorageStats(),
-    ]);
+    const [totalQuestions, activeQuestions, categoryStats, totalUsers, totalGames, storageStats] =
+      await Promise.all([
+        prisma.question.count(),
+        prisma.question.count({ where: { isActive: true } }),
+        prisma.question.groupBy({
+          by: ["category"],
+          _count: true,
+        }),
+        // ⭐ นับผู้ใช้จริง
+        prisma.user.count({ where: { isActive: true } }),
+        // ⭐ นับเกมที่เล่นจริง
+        prisma.gameResult.count({ where: { isCompleted: true } }),
+        fileService.getStorageStats(),
+      ]);
+
+    // ⭐ คำนวณคะแนนเฉลี่ยจริง
+    const avgScoreResult = await prisma.gameResult.aggregate({
+      where: { isCompleted: true },
+      _avg: { score: true },
+    });
 
     const stats = {
       totalQuestions,
@@ -88,6 +99,9 @@ router.get("/stats", authenticateToken, adminOnly, async (req, res) => {
         acc[cat.category] = cat._count;
         return acc;
       }, {} as any),
+      totalUsers,
+      totalGames,
+      avgScore: Math.round(avgScoreResult._avg.score || 0),
       storage: {
         totalFiles: storageStats.totalFiles,
         totalSize: storageStats.totalSize,
