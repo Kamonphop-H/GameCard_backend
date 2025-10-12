@@ -63,18 +63,17 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
   return sampleArray(normalized, count);
 }
 
-/** POST /api/game/start */
 router.post("/start", requireAuth, async (req, res) => {
   try {
-    const { category = "MIXED", questionCount = 10 } = req.body || {};
-    const lang = (req.auth!.lang || "th") as Lang;
+    const { category = "MIXED", questionCount = 10, lang } = req.body || {};
+    const selectedLang = (lang || req.auth!.lang || "th") as Lang;
     const userId = req.auth!.userId;
 
     let questionList: any[] = [];
 
     if (category === "MIXED") {
       for (const c of CATEGORY_LIST) {
-        const part = await fetchQuestionsOfCategory(c, 10, lang);
+        const part = await fetchQuestionsOfCategory(c, 10, selectedLang);
         questionList.push(...part);
       }
       questionList = sampleArray(questionList, questionList.length);
@@ -82,7 +81,7 @@ router.post("/start", requireAuth, async (req, res) => {
       if (!CATEGORY_LIST.includes(category)) {
         return res.status(400).json({ ok: false, error: "INVALID_CATEGORY" });
       }
-      questionList = await fetchQuestionsOfCategory(category, Number(questionCount) || 10, lang);
+      questionList = await fetchQuestionsOfCategory(category, Number(questionCount) || 10, selectedLang);
     }
 
     const result = await prisma.gameResult.create({
@@ -104,13 +103,11 @@ router.post("/start", requireAuth, async (req, res) => {
   }
 });
 
-/** POST /api/game/complete - ⭐ แก้ไขให้บันทึกได้จริง */
 router.post("/complete", requireAuth, async (req, res) => {
   try {
     const { sessionId, answers = [], category } = req.body || {};
     const userId = req.auth!.userId;
 
-    // ตรวจสอบ session
     const result = await prisma.gameResult.findUnique({
       where: { id: sessionId },
     });
@@ -122,7 +119,6 @@ router.post("/complete", requireAuth, async (req, res) => {
       });
     }
 
-    // ดึงคำถามทั้งหมด
     const qIds = answers.map((a: any) => a.id).filter(Boolean);
     const questions = await prisma.question.findMany({
       where: { id: { in: qIds } },
@@ -143,7 +139,6 @@ router.post("/complete", requireAuth, async (req, res) => {
 
     const qMap = new Map(questions.map((q) => [q.id, q]));
 
-    // ⭐ คำนวณคะแนน
     let correct = 0;
     let serverScore = 0;
     const toCreateGQ: any[] = [];
@@ -163,9 +158,7 @@ router.post("/complete", requireAuth, async (req, res) => {
         .toLowerCase();
       let isCorrect = false;
 
-      // ⭐ ตรวจสอบตาม inputType
       if (q.inputType === "CALCULATION") {
-        // สำหรับคำนวณ
         try {
           const targetValue = q.translations?.[0]?.targetValue;
           if (targetValue !== null && targetValue !== undefined) {
@@ -177,7 +170,6 @@ router.post("/complete", requireAuth, async (req, res) => {
           isCorrect = false;
         }
       } else {
-        // สำหรับ TEXT และ MULTIPLE_CHOICE
         isCorrect = chosen && corrList.includes(chosen);
       }
 
@@ -195,12 +187,8 @@ router.post("/complete", requireAuth, async (req, res) => {
       });
     }
 
-    // ⭐ บันทึกทุกอย่างในครั้งเดียว
     await prisma.$transaction(async (tx) => {
-      // 1. บันทึก GameQuestion
       await tx.gameQuestion.createMany({ data: toCreateGQ });
-
-      // 2. อัปเดต GameResult
       await tx.gameResult.update({
         where: { id: result.id },
         data: {
@@ -212,7 +200,6 @@ router.post("/complete", requireAuth, async (req, res) => {
         },
       });
 
-      // 3. อัปเดต Profile
       await tx.profile.update({
         where: { userId },
         data: {
@@ -222,7 +209,6 @@ router.post("/complete", requireAuth, async (req, res) => {
       });
     });
 
-    // ⭐ คำนวณ mastery ใหม่
     const allAnswers = await prisma.gameQuestion.findMany({
       where: {
         gameResult: {
@@ -262,7 +248,6 @@ router.post("/complete", requireAuth, async (req, res) => {
       },
     });
 
-    // ⭐ ปลดล็อค achievement ถ้าเล่น MIXED
     if (category === "MIXED") {
       await prisma.achievement.upsert({
         where: {
@@ -299,7 +284,6 @@ router.post("/complete", requireAuth, async (req, res) => {
   }
 });
 
-/** GET /api/game/session/:id */
 router.get("/session/:id", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;

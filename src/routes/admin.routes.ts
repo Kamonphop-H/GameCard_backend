@@ -10,7 +10,6 @@ import { questionTypes } from "../config/questionTypes";
 
 const router = Router();
 
-// Configure multer for memory storage
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -26,7 +25,6 @@ const upload = multer({
   },
 });
 
-// Validation schemas
 const questionSchema = z.object({
   category: z.enum(["HEALTH", "COGNITION", "DIGITAL", "FINANCE"]),
   type: z.enum([
@@ -61,14 +59,12 @@ const questionSchema = z.object({
   }),
 });
 
-// Initialize GridFS when server starts
 export const initializeFileService = async () => {
   const mongoUri = process.env.DATABASE_URL || "";
   const dbName = process.env.DB_NAME || "quiz-game";
   await fileService.initialize(mongoUri, dbName);
 };
 
-// Get admin statistics
 router.get("/stats", authenticateToken, adminOnly, async (req, res) => {
   try {
     const [totalQuestions, activeQuestions, categoryStats, totalUsers, totalGames, storageStats] =
@@ -79,14 +75,11 @@ router.get("/stats", authenticateToken, adminOnly, async (req, res) => {
           by: ["category"],
           _count: true,
         }),
-        // ⭐ นับผู้ใช้จริง
         prisma.user.count({ where: { isActive: true } }),
-        // ⭐ นับเกมที่เล่นจริง
         prisma.gameResult.count({ where: { isCompleted: true } }),
         fileService.getStorageStats(),
       ]);
 
-    // ⭐ คำนวณคะแนนเฉลี่ยจริง
     const avgScoreResult = await prisma.gameResult.aggregate({
       where: { isCompleted: true },
       _avg: { score: true },
@@ -116,7 +109,6 @@ router.get("/stats", authenticateToken, adminOnly, async (req, res) => {
   }
 });
 
-// Get questions with filters
 router.get("/questions", authenticateToken, adminOnly, async (req, res) => {
   try {
     const { category, search, page = 1, limit = 50 } = req.query;
@@ -153,7 +145,6 @@ router.get("/questions", authenticateToken, adminOnly, async (req, res) => {
       prisma.question.count({ where }),
     ]);
 
-    // Transform imageUrl to full URL if exists
     const questionsWithImageUrls = questions.map((q) => ({
       ...q,
       translations: q.translations.map((t) => ({
@@ -174,15 +165,12 @@ router.get("/questions", authenticateToken, adminOnly, async (req, res) => {
   }
 });
 
-// Create new question
 router.post("/questions", authenticateToken, adminOnly, upload.single("image"), async (req, res) => {
   try {
     const { category, type, inputType, difficulty, translations } = req.body;
 
-    // Parse translations if it's a string (from FormData)
     const translationsData = typeof translations === "string" ? JSON.parse(translations) : translations;
 
-    // Validate input
     const validatedData = questionSchema.parse({
       category,
       type,
@@ -191,7 +179,6 @@ router.post("/questions", authenticateToken, adminOnly, upload.single("image"), 
       translations: translationsData,
     });
 
-    // Upload image to GridFS if provided
     let imageFileId = null;
     if (req.file) {
       const uploadResult = await fileService.uploadImage(req.file, {
@@ -201,7 +188,6 @@ router.post("/questions", authenticateToken, adminOnly, upload.single("image"), 
       imageFileId = uploadResult.fileId;
     }
 
-    // Create question with translations
     const question = await prisma.question.create({
       data: {
         category: validatedData.category,
@@ -237,7 +223,6 @@ router.post("/questions", authenticateToken, adminOnly, upload.single("image"), 
       },
     });
 
-    // Update image metadata with question ID
     if (imageFileId) {
       await fileService.updateImageMetadata(imageFileId, {
         questionId: question.id,
