@@ -10,7 +10,7 @@ import {
   hashPassword,
   comparePassword,
   sanitizeUser,
-  authenticateToken,
+  requireAuth, // ⭐ เปลี่ยนจาก authenticateToken เป็น requireAuth
 } from "../middlewares/security";
 import { z } from "zod";
 import QRCode from "qrcode";
@@ -56,7 +56,7 @@ const cookieConfig = {
   sameSite: "lax" as const,
   secure: false,
   path: "/",
-  maxAge: 365 * 24 * 60 * 60 * 1000, // ⭐ 1 ปี - ไม่จำกัดเวลา
+  maxAge: 365 * 24 * 60 * 60 * 1000,
 };
 
 // ===== Sign Up =====
@@ -162,9 +162,11 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
 });
 
 // ===== 🆕 QR Code Login - Generate Token =====
-router.post("/qr/generate", authenticateToken, async (req, res) => {
+router.post("/qr/generate", requireAuth, async (req, res) => {
   try {
-    const userId = (req as any).user.uid;
+    console.log("QR Generate - Auth data:", req.auth); // ⭐ Debug log
+
+    const userId = req.auth!.userId;
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -198,6 +200,8 @@ router.post("/qr/generate", authenticateToken, async (req, res) => {
       width: 300,
     });
 
+    console.log("QR Code generated successfully for:", user.username); // ⭐ Success log
+
     res.json({
       qrCode: qrCodeUrl,
       qrToken,
@@ -227,7 +231,6 @@ router.post("/qr/login", authLimiter, async (req, res) => {
 
     const { token, username } = parsed;
 
-    // ตรวจสอบ QR Token
     const session = await prisma.session.findFirst({
       where: {
         token,
@@ -248,14 +251,12 @@ router.post("/qr/login", authLimiter, async (req, res) => {
       return res.status(401).json({ error: "QR code mismatch" });
     }
 
-    // สร้าง Token ใหม่
     const { accessToken, refreshToken } = generateTokens({
       uid: session.user.id,
       username: session.user.username,
       role: session.user.role,
     });
 
-    // ลบ Session เก่า สร้างใหม่
     await prisma.session.deleteMany({ where: { userId: session.user.id } });
     await prisma.session.create({
       data: {
@@ -283,15 +284,13 @@ router.post("/qr/login", authLimiter, async (req, res) => {
   }
 });
 
-// ===== 🆕 Anonymous Login - ไม่บันทึกข้อมูล =====
+// ===== 🆕 Anonymous Login =====
 router.post("/anonymous", authLimiter, async (req, res) => {
   try {
     const { preferredLang = "th" } = req.body;
 
-    // สร้าง temporary user ID
     const anonymousId = `anon_${nanoid(16)}`;
 
-    // ⭐ ไม่บันทึกลง database - ใช้ในเมมโมรี่เท่านั้น
     const { accessToken } = generateTokens({
       uid: anonymousId,
       username: "Anonymous",
@@ -300,7 +299,7 @@ router.post("/anonymous", authLimiter, async (req, res) => {
 
     res.cookie("auth_token", accessToken, {
       ...cookieConfig,
-      maxAge: 24 * 60 * 60 * 1000, // Anonymous = 24 ชม.
+      maxAge: 24 * 60 * 60 * 1000,
     });
 
     return res.json({
@@ -316,87 +315,6 @@ router.post("/anonymous", authLimiter, async (req, res) => {
   } catch (error) {
     console.error("Anonymous login error:", error);
     return res.status(500).json({ error: "Anonymous login failed" });
-  }
-});
-
-// ===== 🆕 Google Sign In =====
-router.post("/google", authLimiter, async (req, res) => {
-  try {
-    const { idToken, preferredLang = "th" } = req.body;
-
-    if (!idToken) {
-      return res.status(400).json({ error: "Google ID token required" });
-    }
-
-    // ⭐ TODO: Verify Google ID token with Firebase Admin SDK
-    // const decodedToken = await admin.auth().verifyIdToken(idToken);
-    // const { uid, email, name } = decodedToken;
-
-    // สำหรับ Demo: ใช้ข้อมูลจาก client
-    const { email, name, googleId } = req.body;
-
-    if (!email || !googleId) {
-      return res.status(400).json({ error: "Invalid Google data" });
-    }
-
-    // หา/สร้าง user
-    let user = await prisma.user.findFirst({
-      where: {
-        OR: [{ username: email }, { username: googleId }],
-      },
-      include: { profile: true },
-    });
-
-    if (!user) {
-      // สร้าง user ใหม่
-      const username = email.split("@")[0] + "_" + nanoid(4);
-
-      user = await prisma.user.create({
-        data: {
-          username,
-          passwordHash: await hashPassword(nanoid(32)), // random password
-          preferredLang,
-          profile: {
-            create: {
-              displayName: name || username,
-              avatar: req.body.photoURL || null,
-            },
-          },
-        },
-        include: { profile: true },
-      });
-    }
-
-    const { accessToken, refreshToken } = generateTokens({
-      uid: user.id,
-      username: user.username,
-      role: user.role,
-    });
-
-    await prisma.session.deleteMany({ where: { userId: user.id } });
-    await prisma.session.create({
-      data: {
-        userId: user.id,
-        token: refreshToken,
-        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      },
-    });
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastLoginAt: new Date() },
-    });
-
-    res.cookie("auth_token", accessToken, cookieConfig);
-    res.cookie("refresh_token", refreshToken, cookieConfig);
-
-    return res.json({
-      user: sanitizeUser(user),
-      message: "เข้าสู่ระบบด้วย Google สำเร็จ",
-    });
-  } catch (error) {
-    console.error("Google sign in error:", error);
-    return res.status(500).json({ error: "Google sign in failed" });
   }
 });
 
@@ -478,7 +396,6 @@ router.get("/me", async (req, res) => {
 
     const payload = verifyAccessToken(token);
 
-    // ⭐ ตรวจสอบ Anonymous
     if (payload.uid.startsWith("anon_")) {
       return res.json({
         user: {
