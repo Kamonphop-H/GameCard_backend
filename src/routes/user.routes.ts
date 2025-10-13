@@ -5,12 +5,11 @@ import { requireAuth } from "../middlewares/security";
 
 const router = Router();
 
-/** GET /api/user/stats - ⭐ ดึงข้อมูลจริงจากฐานข้อมูล */
+// ⭐ GET /api/user/stats - ลบ hasPlayedMixed
 router.get("/stats", requireAuth, async (req, res) => {
   try {
     const userId = req.auth!.userId;
 
-    // ดึงข้อมูล Profile
     const profile = await prisma.profile.findUnique({
       where: { userId },
       select: {
@@ -24,7 +23,6 @@ router.get("/stats", requireAuth, async (req, res) => {
     });
 
     if (!profile) {
-      // สร้าง profile ใหม่ถ้ายังไม่มี
       const newProfile = await prisma.profile.create({
         data: {
           userId,
@@ -45,20 +43,8 @@ router.get("/stats", requireAuth, async (req, res) => {
         cognitionMastery: 0,
         digitalMastery: 0,
         financeMastery: 0,
-        hasPlayedMixed: false,
       });
     }
-
-    // ⭐ เช็คว่าเคยเล่น MIXED หรือยัง (จาก Achievement)
-    const mixedAchievement = await prisma.achievement.findFirst({
-      where: {
-        userId,
-        type: "MIXED_UNLOCK",
-        isCompleted: true,
-      },
-    });
-
-    const hasPlayedMixed = !!mixedAchievement;
 
     res.json({
       totalScore: profile.totalScore,
@@ -67,7 +53,6 @@ router.get("/stats", requireAuth, async (req, res) => {
       cognitionMastery: profile.cognitionMastery,
       digitalMastery: profile.digitalMastery,
       financeMastery: profile.financeMastery,
-      hasPlayedMixed,
     });
   } catch (error) {
     console.error("Get stats error:", error);
@@ -75,16 +60,13 @@ router.get("/stats", requireAuth, async (req, res) => {
   }
 });
 
-/** GET /api/user/profile - ดึงข้อมูล Profile เต็ม */
 router.get("/profile", requireAuth, async (req, res) => {
   try {
     const userId = req.auth!.userId;
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: {
-        profile: true,
-      },
+      include: { profile: true },
     });
 
     if (!user) {
@@ -106,7 +88,6 @@ router.get("/profile", requireAuth, async (req, res) => {
   }
 });
 
-/** PATCH /api/user/profile - อัพเดท Profile */
 router.patch("/profile", requireAuth, async (req, res) => {
   try {
     const userId = req.auth!.userId;

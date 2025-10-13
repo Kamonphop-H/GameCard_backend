@@ -8,15 +8,18 @@ import { Category, Lang } from "@prisma/client";
 const router = Router();
 
 const CATEGORY_LIST: Category[] = ["HEALTH", "COGNITION", "DIGITAL", "FINANCE"];
-const diffLabel = (n: number) => (n >= 3 ? "HARD" : n === 2 ? "MEDIUM" : "EASY");
 
-function sampleArray<T>(arr: T[], n: number) {
+function shuffleArray<T>(arr: T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
-  return a.slice(0, Math.max(0, Math.min(n, a.length)));
+  return a;
+}
+
+function sampleArray<T>(arr: T[], n: number): T[] {
+  return shuffleArray(arr).slice(0, Math.min(n, arr.length));
 }
 
 async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang) {
@@ -44,68 +47,75 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
 
   const normalized = qs.map((q) => {
     const t = q.translations[0];
+
+    // ⭐ กรองตัวเลือกที่ไม่ว่าง
+    const filteredOptions = (t?.options || []).filter((opt) => opt && opt.trim() !== "");
+
     return {
       id: q.id,
       category: q.category,
       type: q.type,
       inputType: q.inputType,
       question: t?.questionText || "—",
-      options: t?.options || [],
+      options: filteredOptions, // ใช้ตัวเลือกที่กรองแล้ว
       correctAnswer: (t?.correctAnswers?.[0] || "").toString(),
       correctAnswers: t?.correctAnswers || [],
       targetValue: t?.targetValue || null,
       explanation: t?.explanation || "",
       imageUrl: t?.imageUrl ? `/api/admin/images/${t.imageUrl}` : "",
-      difficulty: diffLabel(q.difficulty),
+      difficulty: q.difficulty >= 3 ? "HARD" : q.difficulty === 2 ? "MEDIUM" : "EASY",
     };
   });
 
   return sampleArray(normalized, count);
 }
 
+// ⭐ เริ่มเกม - เล่นแบบ MIXED เท่านั้น (40 คำถาม)
 router.post("/start", requireAuth, async (req, res) => {
   try {
-    const { category = "MIXED", questionCount = 10, lang } = req.body || {};
+    const { lang } = req.body || {};
     const selectedLang = (lang || req.auth!.lang || "th") as Lang;
     const userId = req.auth!.userId;
 
-    let questionList: any[] = [];
+    // ดึงคำถามแต่ละหมวด 10 ข้อ
+    const questionList: any[] = [];
 
-    if (category === "MIXED") {
-      for (const c of CATEGORY_LIST) {
-        const part = await fetchQuestionsOfCategory(c, 10, selectedLang);
-        questionList.push(...part);
-      }
-      questionList = sampleArray(questionList, questionList.length);
-    } else {
-      if (!CATEGORY_LIST.includes(category)) {
-        return res.status(400).json({ ok: false, error: "INVALID_CATEGORY" });
-      }
-      questionList = await fetchQuestionsOfCategory(category, Number(questionCount) || 10, selectedLang);
+    for (const cat of CATEGORY_LIST) {
+      const questions = await fetchQuestionsOfCategory(cat, 10, selectedLang);
+      questionList.push(...questions);
     }
 
+    // สลับลำดับคำถามทั้งหมด
+    const shuffledQuestions = shuffleArray(questionList);
+
+    // สร้าง GameResult
     const result = await prisma.gameResult.create({
       data: {
         userId,
-        category: CATEGORY_LIST.includes(category) ? category : "HEALTH",
+        category: "HEALTH", // ใช้ default category (ไม่มีผลต่อการคำนวณ)
         score: 0,
-        totalQuestions: questionList.length,
+        totalQuestions: shuffledQuestions.length,
         correctAnswers: 0,
         timeSpent: 0,
         isCompleted: false,
       },
     });
 
-    res.json({ sessionId: result.id, category, questions: questionList });
+    res.json({
+      sessionId: result.id,
+      category: "MIXED",
+      questions: shuffledQuestions,
+    });
   } catch (error) {
     console.error("Start game error:", error);
     res.status(500).json({ error: "Failed to start game" });
   }
 });
 
+// ⭐ จบเกม - คำนวณคะแนนและความชำนาญ
 router.post("/complete", requireAuth, async (req, res) => {
   try {
-    const { sessionId, answers = [], category } = req.body || {};
+    const { sessionId, answers = [] } = req.body || {};
     const userId = req.auth!.userId;
 
     const result = await prisma.gameResult.findUnique({
@@ -113,12 +123,10 @@ router.post("/complete", requireAuth, async (req, res) => {
     });
 
     if (!result || result.userId !== userId) {
-      return res.status(404).json({
-        ok: false,
-        error: "ไม่พบเซสชันเกม",
-      });
+      return res.status(404).json({ error: "ไม่พบเซสชันเกม" });
     }
 
+    // ดึงข้อมูลคำถาม
     const qIds = answers.map((a: any) => a.id).filter(Boolean);
     const questions = await prisma.question.findMany({
       where: { id: { in: qIds } },
@@ -129,7 +137,6 @@ router.post("/complete", requireAuth, async (req, res) => {
         inputType: true,
         translations: {
           select: {
-            lang: true,
             correctAnswers: true,
             targetValue: true,
           },
@@ -139,15 +146,24 @@ router.post("/complete", requireAuth, async (req, res) => {
 
     const qMap = new Map(questions.map((q) => [q.id, q]));
 
-    let correct = 0;
+    let totalCorrect = 0;
     let serverScore = 0;
     const toCreateGQ: any[] = [];
 
-    const makeBase = (d: number) => (d >= 3 ? 30 : d === 2 ? 20 : 10);
+    // ตรวจคำตอบและเก็บสถิติแยกตามหมวด
+    const categoryStats: Record<Category, { correct: number; total: number }> = {
+      HEALTH: { correct: 0, total: 0 },
+      COGNITION: { correct: 0, total: 0 },
+      DIGITAL: { correct: 0, total: 0 },
+      FINANCE: { correct: 0, total: 0 },
+    };
 
     for (const a of answers) {
       const q = qMap.get(a.id);
       if (!q) continue;
+
+      const category = q.category as Category;
+      categoryStats[category].total += 1;
 
       const corrList = (q.translations?.[0]?.correctAnswers || []).map((s: any) =>
         String(s).trim().toLowerCase()
@@ -158,6 +174,7 @@ router.post("/complete", requireAuth, async (req, res) => {
         .toLowerCase();
       let isCorrect = false;
 
+      // ตรวจคำตอบ
       if (q.inputType === "CALCULATION") {
         try {
           const targetValue = q.translations?.[0]?.targetValue;
@@ -174,8 +191,12 @@ router.post("/complete", requireAuth, async (req, res) => {
       }
 
       if (isCorrect) {
-        correct += 1;
-        serverScore += makeBase(q.difficulty);
+        totalCorrect += 1;
+        categoryStats[category].correct += 1;
+
+        // คำนวณคะแนน
+        const baseScore = q.difficulty >= 3 ? 30 : q.difficulty === 2 ? 20 : 10;
+        serverScore += baseScore;
       }
 
       toCreateGQ.push({
@@ -187,92 +208,52 @@ router.post("/complete", requireAuth, async (req, res) => {
       });
     }
 
+    // ⭐ คำนวณความชำนาญแต่ละหมวดจากเกมนี้
+    const calculateMastery = (stats: { correct: number; total: number }) => {
+      return stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0;
+    };
+
+    const masteryScores = {
+      healthMastery: calculateMastery(categoryStats.HEALTH),
+      cognitionMastery: calculateMastery(categoryStats.COGNITION),
+      digitalMastery: calculateMastery(categoryStats.DIGITAL),
+      financeMastery: calculateMastery(categoryStats.FINANCE),
+    };
+
+    // บันทึกข้อมูลลง Database
     await prisma.$transaction(async (tx) => {
+      // บันทึกคำตอบ
       await tx.gameQuestion.createMany({ data: toCreateGQ });
+
+      // อัพเดท GameResult
       await tx.gameResult.update({
         where: { id: result.id },
         data: {
           score: serverScore,
-          correctAnswers: correct,
+          correctAnswers: totalCorrect,
           totalQuestions: answers.length,
           isCompleted: true,
           completedAt: new Date(),
         },
       });
 
+      // อัพเดท Profile
       await tx.profile.update({
         where: { userId },
         data: {
           totalScore: { increment: serverScore },
           gamesPlayed: { increment: 1 },
+          ...masteryScores, // อัพเดทความชำนาญจากเกมนี้
         },
       });
     });
-
-    const allAnswers = await prisma.gameQuestion.findMany({
-      where: {
-        gameResult: {
-          userId,
-          isCompleted: true,
-        },
-      },
-      select: {
-        isCorrect: true,
-        question: { select: { category: true } },
-      },
-    });
-
-    const acc = {
-      HEALTH: { correct: 0, total: 0 },
-      COGNITION: { correct: 0, total: 0 },
-      DIGITAL: { correct: 0, total: 0 },
-      FINANCE: { correct: 0, total: 0 },
-    } as Record<Category, { correct: number; total: number }>;
-
-    for (const x of allAnswers) {
-      const c = x.question.category;
-      acc[c].total += 1;
-      if (x.isCorrect) acc[c].correct += 1;
-    }
-
-    const pct = (x: { correct: number; total: number }) =>
-      x.total ? Math.round((x.correct / x.total) * 100) : 0;
-
-    await prisma.profile.update({
-      where: { userId },
-      data: {
-        healthMastery: pct(acc.HEALTH),
-        cognitionMastery: pct(acc.COGNITION),
-        digitalMastery: pct(acc.DIGITAL),
-        financeMastery: pct(acc.FINANCE),
-      },
-    });
-
-    if (category === "MIXED") {
-      await prisma.achievement.upsert({
-        where: {
-          userId_type_category: {
-            userId,
-            type: "MIXED_UNLOCK",
-            category: null,
-          },
-        },
-        update: {
-          isCompleted: true,
-          unlockedAt: new Date(),
-        },
-        create: {
-          userId,
-          type: "MIXED_UNLOCK",
-          isCompleted: true,
-        },
-      });
-    }
 
     res.json({
       ok: true,
       serverScore,
-      correct,
+      correct: totalCorrect,
+      masteryScores, // ส่งกลับไปแสดงผล
+      categoryStats, // ส่งสถิติแต่ละหมวด
       message: "บันทึกคะแนนสำเร็จ",
     });
   } catch (error) {
@@ -284,6 +265,7 @@ router.post("/complete", requireAuth, async (req, res) => {
   }
 });
 
+// เก็บ endpoint session ไว้
 router.get("/session/:id", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -320,15 +302,12 @@ router.get("/session/:id", requireAuth, async (req, res) => {
       };
     });
 
-    const distinctCats = new Set(gr.gameQuestions.map((gq) => gq.question.category));
-    const category = distinctCats.size > 1 ? "MIXED" : Array.from(distinctCats)[0];
-
     res.json({
       sessionId: gr.id,
       score: gr.score,
       correctAnswers: gr.correctAnswers,
       totalQuestions: gr.totalQuestions,
-      category,
+      category: "MIXED",
       masteryPercent: gr.totalQuestions ? (gr.correctAnswers / gr.totalQuestions) * 100 : 0,
       questions,
     });
@@ -339,3 +318,5 @@ router.get("/session/:id", requireAuth, async (req, res) => {
 });
 
 export default router;
+
+// ===== user.routes.ts - ลบ hasPlayedMixed =====
