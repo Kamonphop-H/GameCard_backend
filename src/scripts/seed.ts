@@ -1,6 +1,6 @@
 /** @format */
 import { PrismaClient } from "@prisma/client";
-import { hashPassword } from "../src/middlewares/auth";
+import { hashPassword } from "../middlewares/auth";
 
 const prisma = new PrismaClient();
 

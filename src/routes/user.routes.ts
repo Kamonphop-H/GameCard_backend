@@ -130,4 +130,32 @@ router.patch("/profile", requireAuth, async (req, res) => {
   }
 });
 
+router.get("/last-game-score", requireAuth, async (req, res) => {
+  try {
+    const userId = req.auth!.userId;
+
+    const lastGame = await prisma.gameResult.findFirst({
+      where: {
+        userId,
+        isCompleted: true,
+      },
+      orderBy: {
+        completedAt: "desc",
+      },
+      select: {
+        score: true,
+        completedAt: true,
+      },
+    });
+
+    res.json({
+      score: lastGame?.score || 0,
+      completedAt: lastGame?.completedAt || null,
+    });
+  } catch (error) {
+    console.error("Get last game score error:", error);
+    res.status(500).json({ error: "Failed to load last game score" });
+  }
+});
+
 export default router;

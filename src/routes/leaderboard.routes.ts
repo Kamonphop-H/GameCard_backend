@@ -54,6 +54,16 @@ router.get("/", requireAuth, async (req, res) => {
         score: true,
         correctAnswers: true,
         totalQuestions: true,
+        user: {
+          select: {
+            username: true,
+            profile: {
+              select: {
+                displayName: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -61,6 +71,8 @@ router.get("/", requireAuth, async (req, res) => {
     const byUser = new Map<
       string,
       {
+        username: string;
+        displayName: string;
         score: number;
         games: number;
         totalCorrect: number;
@@ -69,7 +81,10 @@ router.get("/", requireAuth, async (req, res) => {
     >();
 
     for (const r of results) {
-      const e = byUser.get(r.userId) || {
+      const uid = r.userId;
+      const e = byUser.get(uid) || {
+        username: r.user.username,
+        displayName: r.user.profile?.displayName || r.user.username,
         score: 0,
         games: 0,
         totalCorrect: 0,
@@ -79,32 +94,21 @@ router.get("/", requireAuth, async (req, res) => {
       e.games += 1;
       e.totalCorrect += r.correctAnswers;
       e.totalQuestions += r.totalQuestions;
-      byUser.set(r.userId, e);
+      byUser.set(uid, e);
     }
 
-    // ⭐ ดึงข้อมูลผู้ใช้
-    const userIds = Array.from(byUser.keys());
-    const users = await prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: {
-        id: true,
-        username: true,
-      },
-    });
-    const nameMap = new Map(users.map((u) => [u.id, u.username]));
-
     // ⭐ จัดเรียงและสร้าง leaderboard
-    const rows = userIds
-      .map((uid) => {
-        const s = byUser.get(uid)!;
-        const accuracy = s.totalQuestions > 0 ? Math.round((s.totalCorrect / s.totalQuestions) * 100) : 0;
+    const rows = Array.from(byUser.entries())
+      .map(([uid, data]) => {
+        const accuracy =
+          data.totalQuestions > 0 ? Math.round((data.totalCorrect / data.totalQuestions) * 100) : 0;
 
         return {
           userId: uid,
-          username: nameMap.get(uid) || "Unknown",
-          displayName: nameMap.get(uid) || "Unknown",
-          score: s.score,
-          gamesPlayed: s.games,
+          username: data.username,
+          displayName: data.displayName,
+          score: data.score,
+          gamesPlayed: data.games,
           accuracy,
         };
       })
