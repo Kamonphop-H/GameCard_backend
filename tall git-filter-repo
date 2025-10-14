@@ -1,0 +1,15 @@
+[33mcommit 9568d95b7c3088655a4ecfd10c4e7363dc35867c[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: Kamonphop-H <kamonphop0835683717@gmail.com>
+Date:   Tue Oct 14 22:10:28 2025 +0700
+
+    chore: remove GCP service account key and gitignore it
+
+serviceAccountKey.json
+
+[33mcommit c880eec88b9d9946aa5a6d2a000066f43f6b769e[m
+Author: Kamonphop-H <kamonphop0835683717@gmail.com>
+Date:   Tue Oct 14 22:05:18 2025 +0700
+
+    new
+
+serviceAccountKey.json
