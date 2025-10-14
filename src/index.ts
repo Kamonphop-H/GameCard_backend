@@ -16,6 +16,7 @@ import adminRoutes, { initializeFileService } from "./routes/admin.routes";
 import questionRoutes from "./routes/question.routes";
 
 import { apiLimiter, corsOptions } from "./middlewares/security";
+import firebaseService from "./services/firebaseService";
 import { prisma } from "./prisma";
 
 // ENV guard
@@ -125,6 +126,13 @@ async function start() {
 
     await initializeFileService();
     console.log("File service initialized");
+
+    const firebaseInitialized = firebaseService.initialize();
+    if (firebaseInitialized) {
+      console.log("Firebase service initialized");
+    } else {
+      console.warn("Firebase service not configured - Google Sign-In will not work");
+    }
 
     server.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
