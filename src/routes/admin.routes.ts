@@ -44,17 +44,25 @@ const questionSchema = z.object({
   translations: z.object({
     th: z.object({
       questionText: z.string().min(1),
-      options: z.array(z.string()),
+      options: z.array(z.string()).default([]),
       correctAnswers: z.array(z.string()).min(1),
       targetValue: z.number().nullable().optional(),
-      explanation: z.string().optional(),
+      explanation: z.string().optional().default(""),
+      // Add hints
+      hint1: z.string().optional(),
+      hint2: z.string().optional(),
+      hint3: z.string().optional(),
     }),
     en: z.object({
       questionText: z.string().min(1),
-      options: z.array(z.string()),
+      options: z.array(z.string()).default([]),
       correctAnswers: z.array(z.string()).min(1),
       targetValue: z.number().nullable().optional(),
-      explanation: z.string().optional(),
+      explanation: z.string().optional().default(""),
+      // Add hints
+      hint1: z.string().optional(),
+      hint2: z.string().optional(),
+      hint3: z.string().optional(),
     }),
   }),
 });
@@ -109,59 +117,92 @@ router.get("/stats", authenticateToken, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/questions", authenticateToken, adminOnly, async (req, res) => {
+router.post("/questions", authenticateToken, adminOnly, upload.single("image"), async (req, res) => {
   try {
-    const { category, search, page = 1, limit = 50 } = req.query;
+    const { category, type, inputType, difficulty, translations } = req.body;
+    const translationsData = typeof translations === "string" ? JSON.parse(translations) : translations;
+    const validatedData = questionSchema.parse({
+      category,
+      type,
+      inputType,
+      difficulty: Number(difficulty),
+      translations: translationsData,
+    });
 
-    const where: any = {};
-
-    if (category) {
-      where.category = category;
+    let imageFileId = null;
+    if (req.file) {
+      const uploadResult = await fileService.uploadImage(req.file, {
+        category: validatedData.category,
+        uploadedBy: req.user?.username,
+      });
+      imageFileId = uploadResult.fileId;
     }
 
-    if (search) {
-      where.translations = {
-        some: {
-          OR: [
-            { questionText: { contains: search as string, mode: "insensitive" } },
-            { explanation: { contains: search as string, mode: "insensitive" } },
+    const question = await prisma.question.create({
+      data: {
+        category: validatedData.category,
+        type: validatedData.type,
+        inputType: validatedData.inputType,
+        difficulty: validatedData.difficulty,
+        isActive: true,
+        translations: {
+          create: [
+            {
+              lang: "th",
+              questionText: validatedData.translations.th.questionText,
+              options: validatedData.translations.th.options,
+              correctAnswers: validatedData.translations.th.correctAnswers,
+              targetValue: validatedData.translations.th.targetValue || null,
+              explanation: validatedData.translations.th.explanation || "",
+              imageUrl: imageFileId,
+              // Add hints
+              hint1: validatedData.translations.th.hint1 || null,
+              hint2: validatedData.translations.th.hint2 || null,
+              hint3: validatedData.translations.th.hint3 || null,
+            },
+            {
+              lang: "en",
+              questionText: validatedData.translations.en.questionText,
+              options: validatedData.translations.en.options,
+              correctAnswers: validatedData.translations.en.correctAnswers,
+              targetValue: validatedData.translations.en.targetValue || null,
+              explanation: validatedData.translations.en.explanation || "",
+              imageUrl: imageFileId,
+              // Add hints
+              hint1: validatedData.translations.en.hint1 || null,
+              hint2: validatedData.translations.en.hint2 || null,
+              hint3: validatedData.translations.en.hint3 || null,
+            },
           ],
         },
-      };
+      },
+      include: {
+        translations: true,
+      },
+    });
+
+    if (imageFileId) {
+      await fileService.updateImageMetadata(imageFileId, {
+        questionId: question.id,
+        category: question.category,
+        uploadedBy: req.user?.username,
+        uploadedAt: new Date(),
+      });
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
-
-    const [questions, total] = await Promise.all([
-      prisma.question.findMany({
-        where,
-        include: {
-          translations: true,
-        },
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: Number(limit),
-      }),
-      prisma.question.count({ where }),
-    ]);
-
-    const questionsWithImageUrls = questions.map((q) => ({
-      ...q,
-      translations: q.translations.map((t) => ({
-        ...t,
-        imageUrl: t.imageUrl ? `/api/admin/images/${t.imageUrl}` : null,
-      })),
-    }));
-
-    res.json({
-      questions: questionsWithImageUrls,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / Number(limit)),
+    res.status(201).json({
+      message: "Question created successfully",
+      question,
     });
   } catch (error) {
-    console.error("Get questions error:", error);
-    res.status(500).json({ error: "Failed to load questions" });
+    console.error("Create question error:", error);
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        error: "Validation failed",
+        details: error.errors,
+      });
+    }
+    res.status(500).json({ error: "Failed to create question" });
   }
 });
 

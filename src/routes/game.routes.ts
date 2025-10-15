@@ -40,6 +40,10 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
           explanation: true,
           imageUrl: true,
           targetValue: true,
+          // Add hints
+          hint1: true,
+          hint2: true,
+          hint3: true,
         },
       },
     },
@@ -47,8 +51,6 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
 
   const normalized = qs.map((q) => {
     const t = q.translations[0];
-
-    // ⭐ กรองตัวเลือกที่ไม่ว่าง
     const filteredOptions = (t?.options || []).filter((opt) => opt && opt.trim() !== "");
 
     return {
@@ -57,20 +59,54 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
       type: q.type,
       inputType: q.inputType,
       question: t?.questionText || "—",
-      options: filteredOptions, // ใช้ตัวเลือกที่กรองแล้ว
+      options: filteredOptions,
       correctAnswer: (t?.correctAnswers?.[0] || "").toString(),
       correctAnswers: t?.correctAnswers || [],
       targetValue: t?.targetValue || null,
       explanation: t?.explanation || "",
       imageUrl: t?.imageUrl ? `/api/admin/images/${t.imageUrl}` : "",
       difficulty: q.difficulty >= 3 ? "HARD" : q.difficulty === 2 ? "MEDIUM" : "EASY",
+      // Add hints
+      hints: {
+        hint1: t?.hint1 || null,
+        hint2: t?.hint2 || null,
+        hint3: t?.hint3 || null,
+      },
     };
   });
 
   return sampleArray(normalized, count);
 }
 
-// ⭐ เริ่มเกม - เล่นแบบ MIXED เท่านั้น (40 คำถาม)
+router.post("/hint/use", requireAuth, async (req, res) => {
+  try {
+    const { questionId, hintLevel } = req.body;
+    const userId = req.auth!.userId;
+
+    // Record hint usage
+    await prisma.hintUsage.create({
+      data: {
+        userId,
+        questionId,
+        hintLevel: Number(hintLevel),
+      },
+    });
+
+    // Update user's total hints used
+    await prisma.profile.update({
+      where: { userId },
+      data: {
+        totalHintsUsed: { increment: 1 },
+      },
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Hint usage error:", error);
+    res.status(500).json({ error: "Failed to record hint usage" });
+  }
+});
+
 router.post("/start", requireAuth, async (req, res) => {
   try {
     const { lang } = req.body || {};
