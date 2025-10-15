@@ -59,6 +59,7 @@ model User {
   sessions     Session[]
   gameResults  GameResult[]
   achievements Achievement[]
+  hintUsage    HintUsage[]   // ⭐ NEW: Track hint usage
   
   @@map("users")
 }
@@ -70,6 +71,7 @@ model Profile {
   avatar       String?
   totalScore   Int      @default(0)
   gamesPlayed  Int      @default(0)
+  totalHintsUsed Int    @default(0)  // ⭐ NEW: Total hints used
   
   healthMastery    Int @default(0)
   cognitionMastery Int @default(0)
@@ -105,6 +107,7 @@ model Question {
   
   translations QuestionTranslation[]
   gameQuestions GameQuestion[]
+  hintUsage    HintUsage[]     // ⭐ NEW: Track hint usage per question
   
   @@index([category, isActive])
   @@map("questions")
@@ -121,6 +124,11 @@ model QuestionTranslation {
   targetValue    Int?
   explanation    String?
   
+  // ⭐ NEW: Hint fields
+  hint1          String?  // Easy hint
+  hint2          String?  // Medium hint
+  hint3          String?  // Hard hint (almost gives answer)
+  
   question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
   
   @@unique([questionId, lang])
@@ -135,7 +143,8 @@ model GameResult {
   totalQuestions Int
   correctAnswers Int            @default(0)
   timeSpent      Int            @default(0)
-  isCompleted    Boolean        @default(false)  // ⭐ เพิ่ม field นี้
+  hintsUsed      Int            @default(0)  // ⭐ NEW: Hints used in this game
+  isCompleted    Boolean        @default(false)
   completedAt    DateTime       @default(now())
   
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -152,12 +161,28 @@ model GameQuestion {
   questionId   String     @db.ObjectId
   userAnswer   String?
   isCorrect    Boolean
-  timeSpent    Int        
+  timeSpent    Int
+  hintsUsed    Int        @default(0)  // ⭐ NEW: Hints used for this question
 
   gameResult   GameResult @relation(fields: [gameResultId], references: [id], onDelete: Cascade)
   question     Question   @relation(fields: [questionId], references: [id])
   
   @@map("game_questions")
+}
+
+// ⭐ NEW: Track hint usage for analytics
+model HintUsage {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String   @db.ObjectId
+  questionId   String   @db.ObjectId
+  hintLevel    Int      // 1, 2, or 3
+  usedAt       DateTime @default(now())
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question     Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, questionId])
+  @@map("hint_usage")
 }
 
 model Achievement {
