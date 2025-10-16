@@ -21,31 +21,34 @@ declare global {
 const JWT_SECRET = process.env.JWT_SECRET || "change_me";
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "change_me_refresh";
 
-// ⭐ Rate Limiters - ผ่อนปรนมากๆ สำหรับเกม
+// ⭐ Rate Limiters - ปรับใหม่เหมาะสม
 export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000000, // เยอะมาก
+  windowMs: 15 * 60 * 1000, // 15 นาที
+  max: 100, // 100 requests ต่อ 15 นาที
   message: { error: "Too many authentication attempts" },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 export const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10000000, // เยอะมาก
+  windowMs: 1 * 60 * 1000, // 1 นาที
+  max: 60, // 60 requests ต่อนาที
   message: { error: "Too many requests" },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// ⭐ ไม่จำกัด /me endpoint เลย
+// ⭐ /me endpoint - จำกัดแต่ไม่เข้มงวดเกินไป
 export const meRouteLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 10000000, // เยอะมากๆ
-  message: { error: "Too many requests" },
+  windowMs: 1 * 60 * 1000, // 1 นาที
+  max: 30, // 30 requests ต่อนาที (เพียงพอสำหรับ refresh ปกติ)
+  message: { error: "Too many authentication checks" },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: () => true, // ⭐ ข้าม rate limit ทั้งหมด
+  skip: (req) => {
+    // ข้าม rate limit ถ้าเป็น OPTIONS request
+    return req.method === "OPTIONS";
+  },
 });
 
 // Validation schemas
@@ -71,14 +74,14 @@ export interface TokenPayload {
   role: "PLAYER" | "ADMIN";
 }
 
-// ⭐ Token อายุยาวมากๆ สำหรับเกม
+// ⭐ Token อายุปกติ
 export const generateTokens = (payload: TokenPayload) => {
   const accessToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: "30d", // ⭐ 30 วัน แทน 15 นาที
+    expiresIn: "24h", // ⭐ เปลี่ยนจาก 15m เป็น 24h
   });
 
   const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, {
-    expiresIn: "365d", // ⭐ 1 ปี
+    expiresIn: "30d", // ⭐ เปลี่ยนจาก 7d เป็น 30d
   });
 
   return { accessToken, refreshToken };
@@ -141,7 +144,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
     // ⭐ Token หมดอายุ = ให้ logout
     return res.status(401).json({
       error: "Token expired",
-      shouldLogout: true, // ⭐ สัญญาณให้ frontend logout
+      shouldLogout: true,
     });
   }
 };
@@ -175,6 +178,16 @@ export const requireAuth = async (req: Request & { auth?: any }, res: Response, 
 
     const payload = verifyAccessToken(token);
 
+    if (payload.uid.startsWith("anon_")) {
+      req.auth = {
+        userId: payload.uid,
+        username: "Anonymous",
+        role: "PLAYER",
+        lang: "th",
+      };
+      return next();
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: payload.uid },
       select: { id: true, username: true, role: true, preferredLang: true, isActive: true },
@@ -196,7 +209,6 @@ export const requireAuth = async (req: Request & { auth?: any }, res: Response, 
 
     next();
   } catch (error) {
-    // ⭐ Token หมดอายุ = ให้ logout
     return res.status(401).json({
       error: "Token expired",
       shouldLogout: true,

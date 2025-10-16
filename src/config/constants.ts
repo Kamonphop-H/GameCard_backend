@@ -50,12 +50,12 @@ export const corsOptions: CorsOptions = {
 };
 
 // --- Cookies ---
-export const cookieConfig = {
+const cookieConfig = {
   httpOnly: true,
-  sameSite: (IS_PROD ? "strict" : "lax") as const,
-  secure: IS_PROD,
+  sameSite: "lax" as const,
+  secure: false,
   path: "/",
-  ...(IS_PROD && process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  maxAge: 30 * 24 * 60 * 60 * 1000, // ⭐ 30 วัน
 };
 
 // --- Tokens ---
