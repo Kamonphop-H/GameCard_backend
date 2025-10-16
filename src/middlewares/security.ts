@@ -21,17 +21,31 @@ declare global {
 const JWT_SECRET = process.env.JWT_SECRET || "change_me";
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "change_me_refresh";
 
-// Rate limiters
+// ⭐ Rate Limiters - ผ่อนปรนมากๆ สำหรับเกม
 export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 500,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000000, // เยอะมาก
   message: { error: "Too many authentication attempts" },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 10000000, // เยอะมาก
   message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ⭐ ไม่จำกัด /me endpoint เลย
+export const meRouteLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 10000000, // เยอะมากๆ
+  message: { error: "Too many requests" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => true, // ⭐ ข้าม rate limit ทั้งหมด
 });
 
 // Validation schemas
@@ -41,16 +55,13 @@ export const signUpSchema = z.object({
     .min(3)
     .max(20)
     .regex(/^[a-zA-Z0-9_-]+$/),
-  password: z
-    .string()
-    .min(8)
-    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*#?&])/),
+  password: z.string().min(6),
   preferredLang: z.enum(["th", "en"]).optional(),
 });
 
 export const signInSchema = z.object({
   username: z.string().min(1),
-  password: z.string().min(1), // ลดความเข้มงวดสำหรับ signin
+  password: z.string().min(1),
 });
 
 // Token utilities
@@ -60,9 +71,16 @@ export interface TokenPayload {
   role: "PLAYER" | "ADMIN";
 }
 
+// ⭐ Token อายุยาวมากๆ สำหรับเกม
 export const generateTokens = (payload: TokenPayload) => {
-  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: "15m" });
-  const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, { expiresIn: "7d" });
+  const accessToken = jwt.sign(payload, JWT_SECRET, {
+    expiresIn: "30d", // ⭐ 30 วัน แทน 15 นาที
+  });
+
+  const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, {
+    expiresIn: "365d", // ⭐ 1 ปี
+  });
+
   return { accessToken, refreshToken };
 };
 
@@ -120,7 +138,11 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 
     next();
   } catch (error) {
-    return res.status(401).json({ error: "Authentication failed" });
+    // ⭐ Token หมดอายุ = ให้ logout
+    return res.status(401).json({
+      error: "Token expired",
+      shouldLogout: true, // ⭐ สัญญาณให้ frontend logout
+    });
   }
 };
 
@@ -145,7 +167,10 @@ export const requireAuth = async (req: Request & { auth?: any }, res: Response, 
     const token = req.cookies?.auth_token || req.headers.authorization?.replace("Bearer ", "");
 
     if (!token) {
-      return res.status(401).json({ error: "Authentication required" });
+      return res.status(401).json({
+        error: "Authentication required",
+        shouldLogout: true,
+      });
     }
 
     const payload = verifyAccessToken(token);
@@ -156,10 +181,12 @@ export const requireAuth = async (req: Request & { auth?: any }, res: Response, 
     });
 
     if (!user || !user.isActive) {
-      return res.status(401).json({ error: "Invalid user" });
+      return res.status(401).json({
+        error: "Invalid user",
+        shouldLogout: true,
+      });
     }
 
-    // Set auth data for routes
     req.auth = {
       userId: user.id,
       username: user.username,
@@ -169,14 +196,17 @@ export const requireAuth = async (req: Request & { auth?: any }, res: Response, 
 
     next();
   } catch (error) {
-    return res.status(401).json({ error: "Authentication failed" });
+    // ⭐ Token หมดอายุ = ให้ logout
+    return res.status(401).json({
+      error: "Token expired",
+      shouldLogout: true,
+    });
   }
 };
 
-// Fixed CORS options for development
+// CORS options
 export const corsOptions = {
   origin: function (origin: any, callback: any) {
-    // Allow requests with no origin (like mobile apps or Postman)
     if (!origin) return callback(null, true);
 
     const allowedOrigins = [
@@ -192,7 +222,7 @@ export const corsOptions = {
       callback(new Error("Not allowed by CORS"));
     }
   },
-  credentials: true, // สำคัญมาก! ต้องเป็น true เพื่อส่ง cookies
+  credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
   exposedHeaders: ["set-cookie"],

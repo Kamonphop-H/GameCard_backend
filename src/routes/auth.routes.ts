@@ -6,6 +6,7 @@ import {
   generateTokens,
   authLimiter,
   verifyAccessToken,
+  meRouteLimiter,
   verifyRefreshToken,
   hashPassword,
   comparePassword,
@@ -484,7 +485,7 @@ router.post("/logout", async (req, res) => {
 });
 
 // ===== Get Current User =====
-router.get("/me", async (req, res) => {
+router.get("/me", meRouteLimiter, async (req, res) => {
   try {
     const token = req.cookies?.auth_token;
 
