@@ -6,12 +6,11 @@ import {
   generateTokens,
   authLimiter,
   verifyAccessToken,
-  meRouteLimiter,
   verifyRefreshToken,
   hashPassword,
   comparePassword,
   sanitizeUser,
-  requireAuth, // ⭐ เปลี่ยนจาก authenticateToken เป็น requireAuth
+  requireAuth,
 } from "../middlewares/security";
 import { z } from "zod";
 import QRCode from "qrcode";
@@ -58,7 +57,7 @@ const cookieConfig = {
   sameSite: "lax" as const,
   secure: false,
   path: "/",
-  maxAge: 365 * 24 * 60 * 60 * 1000,
+  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
 };
 
 // ===== Sign Up =====
@@ -93,7 +92,7 @@ router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res
       data: {
         userId: user.id,
         token: refreshToken,
-        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
 
@@ -136,11 +135,10 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
       role: user.role,
     });
 
-    // ⭐ ลบเฉพาะ refresh token เก่า (ไม่ลบ QR token)
     await prisma.session.deleteMany({
       where: {
         userId: user.id,
-        token: { not: { startsWith: "qr_" } }, // ⭐ ไม่ลบ QR token
+        token: { not: { startsWith: "qr_" } },
       },
     });
 
@@ -148,7 +146,7 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
       data: {
         userId: user.id,
         token: refreshToken,
-        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
 
@@ -167,6 +165,174 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
   } catch (error) {
     console.error("Signin error:", error);
     return res.status(500).json({ error: "เกิดข้อผิดพลาดในการเข้าสู่ระบบ" });
+  }
+});
+
+// ===== Token Refresh (ต้องอยู่ก่อน /me) =====
+router.post("/refresh", async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refresh_token;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        error: "Refresh token required",
+        shouldLogout: true,
+      });
+    }
+
+    let payload;
+    try {
+      payload = verifyRefreshToken(refreshToken);
+    } catch (error: any) {
+      console.error("Refresh token verification failed:", error.message);
+      res.clearCookie("auth_token");
+      res.clearCookie("refresh_token");
+
+      return res.status(401).json({
+        error: "Refresh token expired",
+        shouldLogout: true,
+      });
+    }
+
+    const session = await prisma.session.findFirst({
+      where: {
+        token: refreshToken,
+        expiresAt: { gt: new Date() },
+      },
+      include: {
+        user: {
+          include: { profile: true },
+        },
+      },
+    });
+
+    if (!session || !session.user.isActive) {
+      res.clearCookie("auth_token");
+      res.clearCookie("refresh_token");
+
+      return res.status(401).json({
+        error: "Invalid session",
+        shouldLogout: true,
+      });
+    }
+
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens({
+      uid: session.user.id,
+      username: session.user.username,
+      role: session.user.role,
+    });
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        token: newRefreshToken,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    res.cookie("auth_token", accessToken, cookieConfig);
+    res.cookie("refresh_token", newRefreshToken, cookieConfig);
+
+    console.log(`✅ Token refreshed for user: ${session.user.username}`);
+
+    return res.json({
+      message: "Token refreshed successfully",
+      user: sanitizeUser(session.user),
+    });
+  } catch (error) {
+    console.error("Token refresh error:", error);
+    return res.status(401).json({
+      error: "Token refresh failed",
+      shouldLogout: true,
+    });
+  }
+});
+
+// ⭐ แก้ไข /me endpoint - ลบ rate limiter ออก
+router.get("/me", async (req, res) => {
+  try {
+    const token = req.cookies?.auth_token;
+
+    if (!token) {
+      return res.status(401).json({
+        error: "Authentication required",
+        shouldLogout: false,
+      });
+    }
+
+    let payload;
+    try {
+      payload = verifyAccessToken(token);
+    } catch (error: any) {
+      if (error.name === "TokenExpiredError") {
+        return res.status(401).json({
+          error: "Token expired",
+          shouldLogout: false,
+          shouldRefresh: true,
+        });
+      }
+
+      return res.status(401).json({
+        error: "Invalid token",
+        shouldLogout: true,
+      });
+    }
+
+    if (payload.uid.startsWith("anon_")) {
+      return res.json({
+        user: {
+          id: payload.uid,
+          username: "Anonymous",
+          role: "PLAYER",
+          preferredLang: "th",
+          isAnonymous: true,
+        },
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.uid },
+      include: { profile: true },
+    });
+
+    if (!user || !user.isActive) {
+      return res.status(401).json({
+        error: "User not found or inactive",
+        shouldLogout: true,
+      });
+    }
+
+    return res.json({
+      user: sanitizeUser(user),
+    });
+  } catch (error) {
+    console.error("/me error:", error);
+    return res.status(500).json({
+      error: "Authentication failed",
+      shouldLogout: false,
+    });
+  }
+});
+
+// ===== Logout =====
+router.post("/logout", async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refresh_token;
+
+    if (refreshToken) {
+      await prisma.session.deleteMany({
+        where: { token: refreshToken },
+      });
+    }
+
+    res.clearCookie("auth_token", cookieConfig);
+    res.clearCookie("refresh_token", cookieConfig);
+
+    return res.json({ message: "ออกจากระบบสำเร็จ" });
+  } catch (error) {
+    res.clearCookie("auth_token");
+    res.clearCookie("refresh_token");
+    return res.json({ message: "ออกจากระบบสำเร็จ" });
   }
 });
 
@@ -409,270 +575,6 @@ router.post("/anonymous", authLimiter, async (req, res) => {
   } catch (error) {
     console.error("Anonymous login error:", error);
     return res.status(500).json({ error: "Anonymous login failed" });
-  }
-});
-
-// ===== Token Refresh Endpoint =====
-router.post("/refresh", async (req, res) => {
-  try {
-    const refreshToken = req.cookies?.refresh_token;
-
-    if (!refreshToken) {
-      return res.status(401).json({
-        error: "Refresh token required",
-        shouldLogout: true,
-      });
-    }
-
-    // Verify refresh token
-    let payload;
-    try {
-      payload = verifyRefreshToken(refreshToken);
-    } catch (error: any) {
-      console.error("Refresh token verification failed:", error.message);
-
-      // ล้าง cookies ที่หมดอายุ
-      res.clearCookie("auth_token");
-      res.clearCookie("refresh_token");
-
-      return res.status(401).json({
-        error: "Refresh token expired",
-        shouldLogout: true,
-      });
-    }
-
-    // Check session in database
-    const session = await prisma.session.findFirst({
-      where: {
-        token: refreshToken,
-        expiresAt: { gt: new Date() },
-      },
-      include: {
-        user: {
-          include: { profile: true },
-        },
-      },
-    });
-
-    if (!session || !session.user.isActive) {
-      res.clearCookie("auth_token");
-      res.clearCookie("refresh_token");
-
-      return res.status(401).json({
-        error: "Invalid session",
-        shouldLogout: true,
-      });
-    }
-
-    // Generate new tokens
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens({
-      uid: session.user.id,
-      username: session.user.username,
-      role: session.user.role,
-    });
-
-    // Update session
-    await prisma.session.update({
-      where: { id: session.id },
-      data: {
-        token: newRefreshToken,
-        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days
-      },
-    });
-
-    // Set new cookies
-    const cookieConfig = {
-      httpOnly: true,
-      sameSite: "lax" as const,
-      secure: false,
-      path: "/",
-      maxAge: 90 * 24 * 60 * 60 * 1000, // 90 days
-    };
-
-    res.cookie("auth_token", accessToken, cookieConfig);
-    res.cookie("refresh_token", newRefreshToken, cookieConfig);
-
-    console.log(`✅ Token refreshed for user: ${session.user.username}`);
-
-    return res.json({
-      message: "Token refreshed successfully",
-      user: sanitizeUser(session.user),
-    });
-  } catch (error) {
-    console.error("Token refresh error:", error);
-    return res.status(401).json({
-      error: "Token refresh failed",
-      shouldLogout: true,
-    });
-  }
-});
-
-// ===== Update /me Endpoint =====
-router.get("/me", meRouteLimiter, async (req, res) => {
-  try {
-    const token = req.cookies?.auth_token;
-
-    if (!token) {
-      return res.status(401).json({
-        error: "Authentication required",
-        shouldLogout: false, // ยังไม่ต้อง logout
-      });
-    }
-
-    let payload;
-    try {
-      payload = verifyAccessToken(token);
-    } catch (error: any) {
-      console.error("/me token verification failed:", error.message);
-
-      // ⭐ ถ้า token หมดอายุ บอกให้ refresh
-      if (error.name === "TokenExpiredError") {
-        return res.status(401).json({
-          error: "Token expired",
-          shouldLogout: false,
-          shouldRefresh: true, // ⭐ บอกให้ client ลอง refresh
-        });
-      }
-
-      // Token invalid
-      return res.status(401).json({
-        error: "Invalid token",
-        shouldLogout: true,
-      });
-    }
-
-    // Handle anonymous users
-    if (payload.uid.startsWith("anon_")) {
-      return res.json({
-        user: {
-          id: payload.uid,
-          username: "Anonymous",
-          role: "PLAYER",
-          preferredLang: "th",
-          isAnonymous: true,
-        },
-      });
-    }
-
-    // Get user from database
-    const user = await prisma.user.findUnique({
-      where: { id: payload.uid },
-      include: { profile: true },
-    });
-
-    if (!user || !user.isActive) {
-      return res.status(401).json({
-        error: "User not found or inactive",
-        shouldLogout: true,
-      });
-    }
-
-    return res.json({
-      user: sanitizeUser(user),
-    });
-  } catch (error) {
-    console.error("/me error:", error);
-    return res.status(401).json({
-      error: "Authentication failed",
-      shouldLogout: true,
-    });
-  }
-});
-
-// ===== Logout =====
-router.post("/logout", async (req, res) => {
-  try {
-    const refreshToken = req.cookies?.refresh_token;
-
-    if (refreshToken) {
-      // ⭐ ลบเฉพาะ refresh token ที่ใช้ logout (ไม่ลบ QR token)
-      await prisma.session.deleteMany({
-        where: {
-          token: refreshToken,
-        },
-      });
-    }
-
-    res.clearCookie("auth_token", cookieConfig);
-    res.clearCookie("refresh_token", cookieConfig);
-
-    return res.json({ message: "ออกจากระบบสำเร็จ" });
-  } catch (error) {
-    res.clearCookie("auth_token");
-    res.clearCookie("refresh_token");
-    return res.json({ message: "ออกจากระบบสำเร็จ" });
-  }
-});
-
-// ===== Get Current User =====
-router.get("/me", meRouteLimiter, async (req, res) => {
-  try {
-    const token = req.cookies?.auth_token;
-
-    if (!token) {
-      return res.status(401).json({
-        error: "Authentication required",
-        shouldLogout: false, // ⭐ ยังไม่ต้อง logout อาจมี refresh token
-      });
-    }
-
-    let payload;
-    try {
-      payload = verifyAccessToken(token);
-    } catch (error: any) {
-      console.error("/me token verification failed:", error.message);
-
-      // ⭐ ถ้า access token หมดอายุ บอกให้ refresh
-      if (error.name === "TokenExpiredError") {
-        return res.status(401).json({
-          error: "Token expired",
-          shouldLogout: false,
-          shouldRefresh: true, // ⭐ บอก frontend ให้ลอง refresh
-        });
-      }
-
-      // ⭐ ถ้า token ไม่ valid ให้ logout
-      return res.status(401).json({
-        error: "Invalid token",
-        shouldLogout: true,
-      });
-    }
-
-    // ⭐ Handle anonymous users
-    if (payload.uid.startsWith("anon_")) {
-      return res.json({
-        user: {
-          id: payload.uid,
-          username: "Anonymous",
-          role: "PLAYER",
-          preferredLang: "th",
-          isAnonymous: true,
-        },
-      });
-    }
-
-    // ⭐ Get user from database
-    const user = await prisma.user.findUnique({
-      where: { id: payload.uid },
-      include: { profile: true },
-    });
-
-    if (!user || !user.isActive) {
-      return res.status(401).json({
-        error: "User not found or inactive",
-        shouldLogout: true, // ⭐ User ไม่มีจริงๆ ให้ logout
-      });
-    }
-
-    return res.json({
-      user: sanitizeUser(user),
-    });
-  } catch (error) {
-    console.error("/me error:", error);
-    return res.status(401).json({
-      error: "Authentication failed",
-      shouldLogout: true,
-    });
   }
 });
 

@@ -31,8 +31,8 @@ export const authLimiter = rateLimit({
 });
 
 export const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 นาที
-  max: 60, // 60 requests ต่อนาที
+  windowMs: 1 * 60 * 1000,
+  max: 120, // ⭐ เพิ่มจาก 60 เป็น 120
   message: { error: "Too many requests" },
   standardHeaders: true,
   legacyHeaders: false,
@@ -74,14 +74,13 @@ export interface TokenPayload {
   role: "PLAYER" | "ADMIN";
 }
 
-// ⭐ Token อายุปกติ
 export const generateTokens = (payload: TokenPayload) => {
   const accessToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: "24h", // ⭐ เปลี่ยนจาก 15m เป็น 24h
+    expiresIn: "15m", // ⭐ กลับมาใช้ 15 นาที (มาตรฐาน)
   });
 
   const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, {
-    expiresIn: "30d", // ⭐ เปลี่ยนจาก 7d เป็น 30d
+    expiresIn: "30d", // ⭐ 30 วัน
   });
 
   return { accessToken, refreshToken };
