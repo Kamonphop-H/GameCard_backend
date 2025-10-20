@@ -14,6 +14,12 @@ declare global {
         username: string;
         role: "PLAYER" | "ADMIN";
       };
+      auth?: {
+        userId: string;
+        username: string;
+        role: "PLAYER" | "ADMIN";
+        lang: "th" | "en";
+      };
     }
   }
 }
@@ -21,32 +27,32 @@ declare global {
 const JWT_SECRET = process.env.JWT_SECRET || "change_me";
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "change_me_refresh";
 
-// ⭐ Rate Limiters - ปรับใหม่เหมาะสม
+// Rate Limiters
 export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 นาที
-  max: 100, // 100 requests ต่อ 15 นาที
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per 15 minutes
   message: { error: "Too many authentication attempts" },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 export const apiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 120, // ⭐ เพิ่มจาก 60 เป็น 120
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
   message: { error: "Too many requests" },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// ⭐ /me endpoint - จำกัดแต่ไม่เข้มงวดเกินไป
+// /me endpoint rate limiter
 export const meRouteLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 นาที
-  max: 30, // 30 requests ต่อนาที (เพียงพอสำหรับ refresh ปกติ)
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 30, // 30 requests per minute
   message: { error: "Too many authentication checks" },
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    // ข้าม rate limit ถ้าเป็น OPTIONS request
+    // Skip rate limit for OPTIONS requests
     return req.method === "OPTIONS";
   },
 });
@@ -74,13 +80,14 @@ export interface TokenPayload {
   role: "PLAYER" | "ADMIN";
 }
 
+// Generate tokens with proper expiry
 export const generateTokens = (payload: TokenPayload) => {
   const accessToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: "15m", // ⭐ กลับมาใช้ 15 นาที (มาตรฐาน)
+    expiresIn: "24h", // 24 hours for access token
   });
 
   const refreshToken = jwt.sign(payload, JWT_REFRESH_SECRET, {
-    expiresIn: "30d", // ⭐ 30 วัน
+    expiresIn: "30d", // 30 days for refresh token
   });
 
   return { accessToken, refreshToken };
@@ -140,7 +147,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 
     next();
   } catch (error) {
-    // ⭐ Token หมดอายุ = ให้ logout
+    // Token expired = logout
     return res.status(401).json({
       error: "Token expired",
       shouldLogout: true,

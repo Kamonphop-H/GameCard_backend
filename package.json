@@ -24,6 +24,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.17.1",
     "@types/compression": "^1.8.1",
     "@types/node": "^24.8.0",

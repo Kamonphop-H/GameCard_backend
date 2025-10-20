@@ -14,6 +14,7 @@ import userRoutes from "./routes/user.routes";
 import leaderboardRoutes from "./routes/leaderboard.routes";
 import adminRoutes, { initializeFileService } from "./routes/admin.routes";
 import questionRoutes from "./routes/question.routes";
+import aiRoutes from "./routes/ai.routes";
 
 import { apiLimiter, corsOptions } from "./middlewares/security";
 import firebaseService from "./services/firebaseService";
@@ -26,6 +27,11 @@ for (const env of required) {
     console.error(`Missing ${env}`);
     process.exit(1);
   }
+}
+
+// ⚠️ Gemini API Key warning (optional but recommended)
+if (!process.env.GEMINI_API_KEY) {
+  console.warn("⚠️  GEMINI_API_KEY not found - AI features will not work");
 }
 
 const app = express();
@@ -48,6 +54,11 @@ app.get("/health", async (_req, res) => {
       status: "healthy",
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
+      services: {
+        database: "connected",
+        firebase: firebaseService.initialize() ? "enabled" : "disabled",
+        ai: process.env.GEMINI_API_KEY ? "enabled" : "disabled",
+      },
     });
   } catch (error) {
     res.status(503).json({
@@ -70,6 +81,7 @@ app.get("/", (_req, res) => {
       user: "/api/user",
       leaderboard: "/api/leaderboard",
       admin: "/api/admin",
+      ai: "/api/ai",
     },
   });
 });
@@ -81,6 +93,7 @@ app.use("/api/questions", questionRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/ai", aiRoutes); // ⭐ เพิ่ม AI routes
 
 // Static files for uploads
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
@@ -122,24 +135,32 @@ process.on("SIGINT", shutdown);
 async function start() {
   try {
     await prisma.$connect();
-    console.log("Database connected");
+    console.log("✅ Database connected");
 
     await initializeFileService();
-    console.log("File service initialized");
+    console.log("✅ File service initialized");
 
     const firebaseInitialized = firebaseService.initialize();
     if (firebaseInitialized) {
-      console.log("Firebase service initialized");
+      console.log("✅ Firebase service initialized");
     } else {
-      console.warn("Firebase service not configured - Google Sign-In will not work");
+      console.warn("⚠️  Firebase service not configured - Google Sign-In will not work");
+    }
+
+    // Check Gemini AI
+    if (process.env.GEMINI_API_KEY) {
+      console.log("✅ Gemini AI service enabled");
+    } else {
+      console.warn("⚠️  Gemini AI not configured - AI features will not work");
     }
 
     server.listen(port, () => {
-      console.log(`Server running on http://localhost:${port}`);
-      console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+      console.log(`🚀 Server running on http://localhost:${port}`);
+      console.log(`📦 Environment: ${process.env.NODE_ENV || "development"}`);
+      console.log(`🤖 AI Features: ${process.env.GEMINI_API_KEY ? "Enabled" : "Disabled"}`);
     });
   } catch (error) {
-    console.error("Failed to start server:", error);
+    console.error("❌ Failed to start server:", error);
     process.exit(1);
   }
 }
