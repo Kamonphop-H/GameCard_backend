@@ -222,26 +222,36 @@ export const requireAuth = async (req: Request & { auth?: any }, res: Response, 
   }
 };
 
-// CORS options
 export const corsOptions = {
   origin: function (origin: any, callback: any) {
+    // Allow requests with no origin
     if (!origin) return callback(null, true);
 
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:3001",
       "http://127.0.0.1:3000",
+      "http://172.20.10.6:3000", // เพิ่ม IP frontend
+      "http://172.20.10.6:3001",
+      "http://45.77.169.231:3000",
+      "http://45.77.169.231:3001",
       process.env.FRONTEND_URL,
     ].filter(Boolean);
+
+    console.log(`CORS check - Origin: ${origin}, Allowed: ${allowedOrigins.includes(origin)}`);
 
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      console.warn(`CORS blocked: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization", "Cookie", "X-Requested-With"],
   exposedHeaders: ["set-cookie"],
+  maxAge: 86400,
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
 };

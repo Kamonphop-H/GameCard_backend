@@ -55,9 +55,10 @@ const validateInput = (schema: z.ZodSchema) => {
 const cookieConfig = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: false,
+  secure: false, // ตั้งเป็น false สำหรับ HTTP, true สำหรับ HTTPS
   path: "/",
   maxAge: 365 * 24 * 60 * 60 * 1000,
+  domain: undefined, // ไม่ระบุ domain เพื่อให้ใช้ได้กับทุก domain
 };
 
 // ===== Sign Up =====

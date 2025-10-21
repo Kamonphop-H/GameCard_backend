@@ -1,7 +1,5 @@
 /** @format */
 
-// src/config/constants.ts
-/** @format */
 import type { CorsOptions } from "cors";
 
 export const IS_PROD = process.env.NODE_ENV === "production";
@@ -26,27 +24,38 @@ const ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
   "http://127.0.0.1:3000",
+  "http://172.20.10.6:3000", // เพิ่ม IP ของ frontend
+  "http://172.20.10.6:3001", // เพิ่มเผื่อใช้ port อื่น45.77.169.231
+  "http://45.77.169.231:3000",
+  "http://45.77.169.231:3001",
   process.env.FRONTEND_URL,
 ].filter(Boolean) as string[];
 
 export const corsOptions: CorsOptions = {
   origin(origin, callback) {
-    // allow server-to-server / same-origin / tools with no origin
+    // Allow requests with no origin (like mobile apps or Postman)
     if (!origin) return callback(null, true);
 
+    // In production, be more strict
     if (IS_PROD) {
-      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`CORS blocked origin: ${origin}`);
       return callback(new Error("Not allowed by CORS"));
     }
 
-    // dev: allow all (log it for visibility)
-    console.warn(`CORS (dev): allowing origin ${origin}`);
+    // In development, allow all but log it
+    console.log(`CORS allowing origin: ${origin}`);
     return callback(null, true);
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization", "Cookie", "X-Requested-With"],
   exposedHeaders: ["set-cookie"],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
 };
 
 // --- Cookies ---

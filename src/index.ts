@@ -16,9 +16,10 @@ import adminRoutes, { initializeFileService } from "./routes/admin.routes";
 import questionRoutes from "./routes/question.routes";
 import aiRoutes from "./routes/ai.routes";
 
-import { apiLimiter, corsOptions } from "./middlewares/security";
+import { apiLimiter } from "./middlewares/security";
 import firebaseService from "./services/firebaseService";
 import { prisma } from "./prisma";
+import { corsOptions } from "./config/cors";
 
 // ENV guard
 const required = ["DATABASE_URL", "JWT_SECRET", "JWT_REFRESH_SECRET"];
@@ -147,17 +148,22 @@ async function start() {
       console.warn("⚠️  Firebase service not configured - Google Sign-In will not work");
     }
 
-    // Check Gemini AI
     if (process.env.GEMINI_API_KEY) {
       console.log("✅ Gemini AI service enabled");
     } else {
       console.warn("⚠️  Gemini AI not configured - AI features will not work");
     }
 
-    server.listen(port, () => {
-      console.log(`🚀 Server running on http://localhost:${port}`);
+    // Bind to all network interfaces (0.0.0.0)
+    server.listen(port, "0.0.0.0", () => {
+      console.log(`🚀 Server running on http://0.0.0.0:${port}`);
+      console.log(`🚀 Accessible at http://172.20.10.6:${port}`);
       console.log(`📦 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(`🤖 AI Features: ${process.env.GEMINI_API_KEY ? "Enabled" : "Disabled"}`);
+      console.log(
+        `✅ CORS allowed origins:`,
+        ["http://localhost:3000", "http://172.20.10.6:3000", process.env.FRONTEND_URL].filter(Boolean)
+      );
     });
   } catch (error) {
     console.error("❌ Failed to start server:", error);
