@@ -301,6 +301,8 @@ router.post("/complete", requireAuth, async (req, res) => {
   }
 });
 
+router.get("/admin/questions"), requireAuth, async (req, res) => {};
+
 // เก็บ endpoint session ไว้
 router.get("/session/:id", requireAuth, async (req, res) => {
   try {

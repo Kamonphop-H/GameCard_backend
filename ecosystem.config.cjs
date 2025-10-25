@@ -1,31 +1,26 @@
 /** @format */
-// ecosystem.config.cjs  (CommonJS)
+
 module.exports = {
   apps: [
     {
-      name: "api",
-      cwd: "/home/backend",
+      name: "cardgame-backend",
       script: "bun",
-      args: "run dev", // ใช้โปรดักชัน ไม่ใช้ dev
+      args: "run dist/index.js",
+      instances: 2, // หรือ "max"
+      exec_mode: "cluster",
       env: {
         NODE_ENV: "production",
-        PORT: "5000",
+        PORT: 5000,
       },
-      watch: false,
+      max_memory_restart: "500M",
+      error_file: "./logs/backend-error.log",
+      out_file: "./logs/backend-out.log",
+      time: true,
+      // Auto restart on crash
       autorestart: true,
-      restart_delay: 3000, // กันรีสตาร์ทรัวๆถ้าล้ม
-      instances: 1, // หรือ "max" ถ้าพร้อม scale
-      exec_mode: "fork", // หรือ "cluster"
+      watch: false, // ปิด watch ใน production
+      max_restarts: 10,
+      min_uptime: "10s",
     },
   ],
-  deploy: {
-    production: {
-      user: "SSH_USERNAME",
-      host: "SSH_HOSTMACHINE",
-      ref: "origin/master",
-      repo: "GIT_REPOSITORY",
-      path: "DESTINATION_PATH",
-      "post-deploy": "bun install && bun run build && pm2 reload ecosystem.config.cjs --only api",
-    },
-  },
 };

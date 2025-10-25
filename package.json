@@ -5,6 +5,9 @@
   "private": true,
   "scripts": {
     "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun --sourcemap=external --minify",
+    "start": "NODE_ENV=production bun run dist/index.js",
+    "prod": "bun run build && bun run start",
     "db:push": "bunx prisma db push",
     "db:gen": "bunx prisma generate",
     "seed": "bun run seed/seed.ts"

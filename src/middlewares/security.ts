@@ -233,8 +233,8 @@ export const corsOptions = {
       "http://127.0.0.1:3000",
       "http://172.20.10.6:3000", // เพิ่ม IP frontend
       "http://172.20.10.6:3001",
-      "http://45.77.169.231:3000",
-      "http://45.77.169.231:3001",
+      "http://45.32.115.120:3000",
+      "http://45.32.115.120:3001",
       process.env.FRONTEND_URL,
     ].filter(Boolean);
 
