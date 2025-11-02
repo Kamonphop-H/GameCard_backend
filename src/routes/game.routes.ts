@@ -40,7 +40,6 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
           explanation: true,
           imageUrl: true,
           targetValue: true,
-          // Add hints
           hint1: true,
           hint2: true,
           hint3: true,
@@ -51,7 +50,7 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
 
   const normalized = qs.map((q) => {
     const t = q.translations[0];
-    const filteredOptions = (t?.options || []).filter((opt) => opt && opt.trim() !== "");
+    const allOptions = t?.options || [];
 
     return {
       id: q.id,
@@ -59,14 +58,13 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
       type: q.type,
       inputType: q.inputType,
       question: t?.questionText || "—",
-      options: filteredOptions,
+      options: allOptions,
       correctAnswer: (t?.correctAnswers?.[0] || "").toString(),
       correctAnswers: t?.correctAnswers || [],
       targetValue: t?.targetValue || null,
       explanation: t?.explanation || "",
       imageUrl: t?.imageUrl ? `/api/admin/images/${t.imageUrl}` : "",
       difficulty: q.difficulty >= 3 ? "HARD" : q.difficulty === 2 ? "MEDIUM" : "EASY",
-      // Add hints
       hints: {
         hint1: t?.hint1 || null,
         hint2: t?.hint2 || null,
@@ -78,12 +76,22 @@ async function fetchQuestionsOfCategory(cat: Category, count: number, lang: Lang
   return sampleArray(normalized, count);
 }
 
+// 🔥 FIX: เช็คว่าเป็น anonymous ก่อน
+function isAnonymous(userId: string): boolean {
+  return userId.startsWith("anon_");
+}
+
+// บันทึกการใช้คำใบ้
 router.post("/hint/use", requireAuth, async (req, res) => {
   try {
     const { questionId, hintLevel } = req.body;
     const userId = req.auth!.userId;
 
-    // Record hint usage
+    // 🔥 FIX: Anonymous ไม่บันทึกการใช้ hint
+    if (isAnonymous(userId)) {
+      return res.json({ success: true, message: "Anonymous mode - hint not saved" });
+    }
+
     await prisma.hintUsage.create({
       data: {
         userId,
@@ -92,7 +100,6 @@ router.post("/hint/use", requireAuth, async (req, res) => {
       },
     });
 
-    // Update user's total hints used
     await prisma.profile.update({
       where: { userId },
       data: {
@@ -107,6 +114,7 @@ router.post("/hint/use", requireAuth, async (req, res) => {
   }
 });
 
+// เริ่มเกมใหม่
 router.post("/start", requireAuth, async (req, res) => {
   try {
     const { lang } = req.body || {};
@@ -124,11 +132,22 @@ router.post("/start", requireAuth, async (req, res) => {
     // สลับลำดับคำถามทั้งหมด
     const shuffledQuestions = shuffleArray(questionList);
 
-    // สร้าง GameResult
+    // 🔥 FIX: Anonymous ไม่สร้าง GameResult
+    if (isAnonymous(userId)) {
+      console.log("🎮 Anonymous game started - no session saved");
+      return res.json({
+        sessionId: null, // ไม่มี session
+        category: "MIXED",
+        questions: shuffledQuestions,
+        isAnonymous: true,
+      });
+    }
+
+    // สร้าง GameResult (ยังไม่ complete)
     const result = await prisma.gameResult.create({
       data: {
         userId,
-        category: "HEALTH", // ใช้ default category (ไม่มีผลต่อการคำนวณ)
+        category: "HEALTH",
         score: 0,
         totalQuestions: shuffledQuestions.length,
         correctAnswers: 0,
@@ -137,10 +156,18 @@ router.post("/start", requireAuth, async (req, res) => {
       },
     });
 
+    console.log("📊 Questions per category:", {
+      HEALTH: shuffledQuestions.filter((q) => q.category === "HEALTH").length,
+      COGNITION: shuffledQuestions.filter((q) => q.category === "COGNITION").length,
+      DIGITAL: shuffledQuestions.filter((q) => q.category === "DIGITAL").length,
+      FINANCE: shuffledQuestions.filter((q) => q.category === "FINANCE").length,
+    });
+
     res.json({
       sessionId: result.id,
       category: "MIXED",
       questions: shuffledQuestions,
+      isAnonymous: false,
     });
   } catch (error) {
     console.error("Start game error:", error);
@@ -148,11 +175,39 @@ router.post("/start", requireAuth, async (req, res) => {
   }
 });
 
-// ⭐ จบเกม - คำนวณคะแนนและความชำนาญ
+// 🎯 จบเกม - บันทึกคะแนนและความชำนาญ (ใช้ค่าปัจจุบันโดยตรง)
 router.post("/complete", requireAuth, async (req, res) => {
   try {
-    const { sessionId, answers = [] } = req.body || {};
+    const { sessionId, answers = [], finalScore, finalCorrect, categoryStats } = req.body || {};
     const userId = req.auth!.userId;
+
+    console.log("🎮 Game completion started:", {
+      sessionId,
+      userId,
+      answersReceived: answers.length,
+      finalScore,
+      finalCorrect,
+      categoryStats,
+      isAnonymous: isAnonymous(userId),
+    });
+
+    // 🔥 FIX: Anonymous ไม่บันทึกผล
+    if (isAnonymous(userId)) {
+      console.log("✅ Anonymous game completed - no data saved");
+      return res.json({
+        ok: true,
+        message: "Anonymous mode - results not saved",
+        savedScore: finalScore,
+        savedCorrect: finalCorrect,
+        categoryStats,
+        isAnonymous: true,
+      });
+    }
+
+    // ตรวจสอบว่ามี GameResult หรือไม่
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID required" });
+    }
 
     const result = await prisma.gameResult.findUnique({
       where: { id: sessionId },
@@ -162,138 +217,104 @@ router.post("/complete", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "ไม่พบเซสชันเกม" });
     }
 
-    // ดึงข้อมูลคำถาม
-    const qIds = answers.map((a: any) => a.id).filter(Boolean);
-    const questions = await prisma.question.findMany({
-      where: { id: { in: qIds } },
-      select: {
-        id: true,
-        category: true,
-        difficulty: true,
-        inputType: true,
-        translations: {
-          select: {
-            correctAnswers: true,
-            targetValue: true,
-          },
-        },
-      },
-    });
-
-    const qMap = new Map(questions.map((q) => [q.id, q]));
-
-    let totalCorrect = 0;
-    let serverScore = 0;
+    // สร้างข้อมูล GameQuestion สำหรับบันทึก
     const toCreateGQ: any[] = [];
 
-    // ตรวจคำตอบและเก็บสถิติแยกตามหมวด
-    const categoryStats: Record<Category, { correct: number; total: number }> = {
-      HEALTH: { correct: 0, total: 0 },
-      COGNITION: { correct: 0, total: 0 },
-      DIGITAL: { correct: 0, total: 0 },
-      FINANCE: { correct: 0, total: 0 },
-    };
-
     for (const a of answers) {
-      const q = qMap.get(a.id);
-      if (!q) continue;
-
-      const category = q.category as Category;
-      categoryStats[category].total += 1;
-
-      const corrList = (q.translations?.[0]?.correctAnswers || []).map((s: any) =>
-        String(s).trim().toLowerCase()
-      );
-
-      let chosen = String(a.chosen ?? "")
-        .trim()
-        .toLowerCase();
-      let isCorrect = false;
-
-      // ตรวจคำตอบ
-      if (q.inputType === "CALCULATION") {
-        try {
-          const targetValue = q.translations?.[0]?.targetValue;
-          if (targetValue !== null && targetValue !== undefined) {
-            const sanitized = chosen.replace(/[^0-9+\-*/\s()]/g, "");
-            const calculatedResult = Function(`"use strict"; return (${sanitized})`)();
-            isCorrect = Math.abs(calculatedResult - targetValue) < 0.001;
-          }
-        } catch {
-          isCorrect = false;
-        }
-      } else {
-        isCorrect = chosen && corrList.includes(chosen);
-      }
-
-      if (isCorrect) {
-        totalCorrect += 1;
-        categoryStats[category].correct += 1;
-
-        // คำนวณคะแนน
-        const baseScore = q.difficulty >= 3 ? 30 : q.difficulty === 2 ? 20 : 10;
-        serverScore += baseScore;
-      }
-
       toCreateGQ.push({
         gameResultId: result.id,
-        questionId: q.id,
-        userAnswer: a.chosen ?? "",
-        isCorrect,
-        timeSpent: Number(a.timeSpent ?? 0),
+        questionId: a.id,
+        userAnswer: String(a.chosen || ""),
+        isCorrect: Boolean(a.isCorrect),
+        timeSpent: Number(a.timeSpent || 0),
       });
     }
 
-    // ⭐ คำนวณความชำนาญแต่ละหมวดจากเกมนี้
+    // ⭐ คำนวณ % ความชำนาญจากเกมนี้โดยตรง (ไม่เอาข้อมูลเก่ามาหาค่าเฉลี่ย)
     const calculateMastery = (stats: { correct: number; total: number }) => {
       return stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0;
     };
 
-    const masteryScores = {
-      healthMastery: calculateMastery(categoryStats.HEALTH),
-      cognitionMastery: calculateMastery(categoryStats.COGNITION),
-      digitalMastery: calculateMastery(categoryStats.DIGITAL),
-      financeMastery: calculateMastery(categoryStats.FINANCE),
+    const newMasteryScores = {
+      healthMastery: calculateMastery(categoryStats?.HEALTH || { correct: 0, total: 0 }),
+      cognitionMastery: calculateMastery(categoryStats?.COGNITION || { correct: 0, total: 0 }),
+      digitalMastery: calculateMastery(categoryStats?.DIGITAL || { correct: 0, total: 0 }),
+      financeMastery: calculateMastery(categoryStats?.FINANCE || { correct: 0, total: 0 }),
     };
 
-    // บันทึกข้อมูลลง Database
-    await prisma.$transaction(async (tx) => {
-      // บันทึกคำตอบ
-      await tx.gameQuestion.createMany({ data: toCreateGQ });
+    console.log("🎯 Current game mastery (will be saved directly):", newMasteryScores);
 
-      // อัพเดท GameResult
+    // บันทึกทุกอย่างใน Transaction
+    await prisma.$transaction(async (tx) => {
+      // 1. บันทึก GameQuestion
+      if (toCreateGQ.length > 0) {
+        await tx.gameQuestion.createMany({ data: toCreateGQ });
+      }
+
+      // 2. อัพเดท GameResult
       await tx.gameResult.update({
         where: { id: result.id },
         data: {
-          score: serverScore,
-          correctAnswers: totalCorrect,
+          score: finalScore,
+          correctAnswers: finalCorrect,
           totalQuestions: answers.length,
           isCompleted: true,
           completedAt: new Date(),
         },
       });
 
-      // อัพเดท Profile
+      // 3. ⭐ อัพเดท Profile - ใช้ค่าปัจจุบันโดยตรง (ไม่หาค่าเฉลี่ย)
       await tx.profile.update({
         where: { userId },
         data: {
-          totalScore: { increment: serverScore },
+          totalScore: { increment: finalScore },
           gamesPlayed: { increment: 1 },
-          ...masteryScores, // อัพเดทความชำนาญจากเกมนี้
+          healthMastery: newMasteryScores.healthMastery, // ⭐ เขียนทับค่าเดิม
+          cognitionMastery: newMasteryScores.cognitionMastery, // ⭐ เขียนทับค่าเดิม
+          digitalMastery: newMasteryScores.digitalMastery, // ⭐ เขียนทับค่าเดิม
+          financeMastery: newMasteryScores.financeMastery, // ⭐ เขียนทับค่าเดิม
         },
       });
     });
 
+    // ⭐ ดึงข้อมูล Profile ที่อัพเดทแล้ว
+    const updatedProfile = await prisma.profile.findUnique({
+      where: { userId },
+      select: {
+        totalScore: true,
+        gamesPlayed: true,
+        healthMastery: true,
+        cognitionMastery: true,
+        digitalMastery: true,
+        financeMastery: true,
+        totalHintsUsed: true,
+        displayName: true,
+      },
+    });
+
+    console.log("✅ Game saved successfully!");
+    console.log("📊 Updated Profile:", updatedProfile);
+
     res.json({
       ok: true,
-      serverScore,
-      correct: totalCorrect,
-      masteryScores, // ส่งกลับไปแสดงผล
-      categoryStats, // ส่งสถิติแต่ละหมวด
       message: "บันทึกคะแนนสำเร็จ",
+      savedScore: finalScore,
+      savedCorrect: finalCorrect,
+      categoryStats,
+      currentGameMastery: newMasteryScores,
+      isAnonymous: false,
+      // ⭐ ส่งข้อมูล Profile ที่อัพเดทแล้วกลับไป
+      updatedProfile: {
+        totalScore: updatedProfile?.totalScore || 0,
+        gamesPlayed: updatedProfile?.gamesPlayed || 0,
+        healthMastery: updatedProfile?.healthMastery || 0,
+        cognitionMastery: updatedProfile?.cognitionMastery || 0,
+        digitalMastery: updatedProfile?.digitalMastery || 0,
+        financeMastery: updatedProfile?.financeMastery || 0,
+      },
     });
   } catch (error) {
-    console.error("Complete game error:", error);
+    console.error("❌ Complete game error:", error);
     res.status(500).json({
       error: "เกิดข้อผิดพลาดในการบันทึกคะแนน",
       details: error instanceof Error ? error.message : "Unknown error",
@@ -301,12 +322,74 @@ router.post("/complete", requireAuth, async (req, res) => {
   }
 });
 
-router.get("/admin/questions"), requireAuth, async (req, res) => {};
+// ดึงข้อมูล Profile ของผู้เล่น (สำหรับ Dashboard)
+router.get("/profile", requireAuth, async (req, res) => {
+  try {
+    const userId = req.auth!.userId;
 
-// เก็บ endpoint session ไว้
+    // 🔥 FIX: Anonymous ไม่มี profile
+    if (isAnonymous(userId)) {
+      return res.json({
+        ok: true,
+        profile: {
+          totalScore: 0,
+          gamesPlayed: 0,
+          totalHintsUsed: 0,
+          healthMastery: 0,
+          cognitionMastery: 0,
+          digitalMastery: 0,
+          financeMastery: 0,
+          displayName: "Anonymous",
+          avatar: null,
+        },
+        isAnonymous: true,
+      });
+    }
+
+    const profile = await prisma.profile.findUnique({
+      where: { userId },
+      select: {
+        totalScore: true,
+        gamesPlayed: true,
+        totalHintsUsed: true,
+        healthMastery: true,
+        cognitionMastery: true,
+        digitalMastery: true,
+        financeMastery: true,
+        displayName: true,
+        avatar: true,
+      },
+    });
+
+    if (!profile) {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+
+    res.json({
+      ok: true,
+      profile,
+      isAnonymous: false,
+    });
+  } catch (error) {
+    console.error("Get profile error:", error);
+    res.status(500).json({ error: "Failed to get profile" });
+  }
+});
+
+// ดึงข้อมูล session เพื่อดูผลการเล่น
 router.get("/session/:id", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.auth!.userId;
+
+    // 🔥 FIX: Anonymous ไม่มี session
+    if (isAnonymous(userId)) {
+      return res.status(404).json({
+        ok: false,
+        error: "Anonymous users don't have saved sessions",
+      });
+    }
+
     const gr = await prisma.gameResult.findUnique({
       where: { id },
       include: {
@@ -324,7 +407,7 @@ router.get("/session/:id", requireAuth, async (req, res) => {
       },
     });
 
-    if (!gr || gr.userId !== req.auth!.userId) {
+    if (!gr || gr.userId !== userId) {
       return res.status(404).json({ ok: false });
     }
 
@@ -337,7 +420,27 @@ router.get("/session/:id", requireAuth, async (req, res) => {
         explanation: t?.explanation || "",
         imageUrl: t?.imageUrl ? `/api/admin/images/${t.imageUrl}` : "",
         isCorrect: gq.isCorrect,
+        userAnswer: gq.userAnswer,
+        category: gq.question.category,
       };
+    });
+
+    // คำนวณสถิติแต่ละหมวด
+    const categoryStats: Record<string, { correct: number; total: number }> = {
+      HEALTH: { correct: 0, total: 0 },
+      COGNITION: { correct: 0, total: 0 },
+      DIGITAL: { correct: 0, total: 0 },
+      FINANCE: { correct: 0, total: 0 },
+    };
+
+    questions.forEach((q) => {
+      const cat = q.category;
+      if (categoryStats[cat]) {
+        categoryStats[cat].total++;
+        if (q.isCorrect) {
+          categoryStats[cat].correct++;
+        }
+      }
     });
 
     res.json({
@@ -348,6 +451,7 @@ router.get("/session/:id", requireAuth, async (req, res) => {
       category: "MIXED",
       masteryPercent: gr.totalQuestions ? (gr.correctAnswers / gr.totalQuestions) * 100 : 0,
       questions,
+      categoryStats,
     });
   } catch (error) {
     console.error("Get session error:", error);
@@ -356,5 +460,3 @@ router.get("/session/:id", requireAuth, async (req, res) => {
 });
 
 export default router;
-
-// ===== user.routes.ts - ลบ hasPlayedMixed =====

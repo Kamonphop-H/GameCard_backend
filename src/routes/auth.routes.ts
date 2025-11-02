@@ -19,13 +19,10 @@ import firebaseService from "../services/firebaseService";
 
 const router = Router();
 
+// ✅ ผ่อนคลายเงื่อนไข - รับได้ทุกอักขระ แค่ไม่ซ้ำ
 const signUpSchema = z.object({
-  username: z
-    .string()
-    .min(3)
-    .max(20)
-    .regex(/^[a-zA-Z0-9_-]+$/),
-  password: z.string().min(6),
+  username: z.string().min(1, "กรุณากรอกชื่อผู้ใช้").max(50, "ชื่อผู้ใช้ยาวเกินไป"),
+  password: z.string().min(8, "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร"),
   preferredLang: z.enum(["th", "en"]).optional().default("th"),
 });
 
@@ -34,12 +31,14 @@ const signInSchema = z.object({
   password: z.string().min(1),
 });
 
+// 🔥 FIXED: เพิ่ม error handling ที่ถูกต้อง
 const validateInput = (schema: z.ZodSchema) => {
   return (req: any, res: any, next: any) => {
     try {
       schema.parse(req.body);
       next();
     } catch (error) {
+      console.error("❌ Validation error:", error);
       if (error instanceof z.ZodError) {
         const firstError = error.errors[0];
         return res.status(400).json({
@@ -55,58 +54,84 @@ const validateInput = (schema: z.ZodSchema) => {
 const cookieConfig = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: false, // ตั้งเป็น false สำหรับ HTTP, true สำหรับ HTTPS
+  secure: false,
   path: "/",
   maxAge: 365 * 24 * 60 * 60 * 1000,
-  domain: undefined, // ไม่ระบุ domain เพื่อให้ใช้ได้กับทุก domain
+  domain: undefined,
 };
 
 // ===== Sign Up =====
-router.post("/signup", authLimiter, validateInput(signUpSchema), async (req, res) => {
+router.post("/signup", authLimiter, validateInput(signUpSchema), async (req: any, res: any) => {
   try {
-    const { username, password, preferredLang } = req.body;
+    const { username, password, preferredLang = "th" } = req.body;
 
-    const existing = await prisma.user.findUnique({ where: { username } });
-    if (existing) {
-      return res.status(409).json({ error: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว", field: "username" });
+    // ตรวจสอบว่า username ซ้ำหรือไม่
+    const existingUser = await prisma.user.findUnique({
+      where: { username },
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: "ชื่อผู้ใช้นี้ถูกใช้งานแล้ว" });
     }
 
+    // สร้าง user ใหม่ (ID จะถูกสร้างอัตโนมัติโดย Prisma - unique ไม่ซ้ำ)
     const passwordHash = await hashPassword(password);
-
     const user = await prisma.user.create({
       data: {
         username,
         passwordHash,
-        preferredLang: preferredLang || "th",
-        profile: { create: { displayName: username } },
+        role: "PLAYER",
+        preferredLang,
+        isActive: true,
       },
-      include: { profile: true },
     });
 
+    // สร้าง profile
+    await prisma.profile.create({
+      data: {
+        userId: user.id,
+        displayName: username,
+        totalScore: 0,
+        gamesPlayed: 0,
+        healthMastery: 0,
+        cognitionMastery: 0,
+        digitalMastery: 0,
+        financeMastery: 0,
+      },
+    });
+
+    // สร้าง tokens
     const { accessToken, refreshToken } = generateTokens({
       uid: user.id,
       username: user.username,
       role: user.role,
     });
 
-    await prisma.session.create({
-      data: {
-        userId: user.id,
-        token: refreshToken,
-        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-      },
+    // ตั้งค่า cookie
+    res.cookie("auth_token", accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 24 * 60 * 60 * 1000,
     });
 
-    res.cookie("auth_token", accessToken, cookieConfig);
-    res.cookie("refresh_token", refreshToken, cookieConfig);
+    res.cookie("refresh_token", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
 
-    return res.status(201).json({
+    console.log("✅ User registered:", username);
+
+    res.status(201).json({
       user: sanitizeUser(user),
-      message: "สร้างบัญชีสำเร็จ! กำลังเข้าสู่ระบบ...",
+      accessToken,
+      refreshToken,
     });
   } catch (error) {
-    console.error("Signup error:", error);
-    return res.status(500).json({ error: "เกิดข้อผิดพลาดในการสร้างบัญชี กรุณาลองใหม่" });
+    console.error("❌ Signup error:", error);
+    res.status(500).json({ error: "ไม่สามารถสร้างบัญชีได้" });
   }
 });
 
@@ -169,7 +194,7 @@ router.post("/signin", authLimiter, validateInput(signInSchema), async (req, res
   }
 });
 
-// ===== Get Current User (/me) - Single Endpoint =====
+// ===== Get Current User (/me) =====
 router.get("/me", meRouteLimiter, async (req, res) => {
   try {
     const token = req.cookies?.auth_token || req.headers.authorization?.replace("Bearer ", "");
@@ -187,7 +212,6 @@ router.get("/me", meRouteLimiter, async (req, res) => {
     } catch (error: any) {
       console.error("/me token verification failed:", error.message);
 
-      // Token expired - suggest refresh
       if (error.name === "TokenExpiredError") {
         return res.status(401).json({
           error: "Token expired",
@@ -196,14 +220,12 @@ router.get("/me", meRouteLimiter, async (req, res) => {
         });
       }
 
-      // Invalid token
       return res.status(401).json({
         error: "Invalid token",
         shouldLogout: true,
       });
     }
 
-    // Handle anonymous users
     if (payload.uid.startsWith("anon_")) {
       return res.json({
         user: {
@@ -216,7 +238,6 @@ router.get("/me", meRouteLimiter, async (req, res) => {
       });
     }
 
-    // Get user from database
     const user = await prisma.user.findUnique({
       where: { id: payload.uid },
       include: { profile: true },
@@ -248,7 +269,7 @@ router.get("/me", meRouteLimiter, async (req, res) => {
   }
 });
 
-// ===== Token Refresh Endpoint =====
+// ===== Token Refresh =====
 router.post("/refresh", async (req, res) => {
   try {
     const refreshToken = req.cookies?.refresh_token;
@@ -275,68 +296,128 @@ router.post("/refresh", async (req, res) => {
       });
     }
 
+    if (payload.uid.startsWith("anon_")) {
+      const { accessToken: newAccessToken } = generateTokens({
+        uid: payload.uid,
+        username: "Anonymous",
+        role: "PLAYER",
+      });
+
+      res.cookie("auth_token", newAccessToken, cookieConfig);
+
+      return res.json({
+        message: "Token refreshed",
+        user: {
+          id: payload.uid,
+          username: "Anonymous",
+          role: "PLAYER",
+          isAnonymous: true,
+        },
+      });
+    }
+
     const session = await prisma.session.findFirst({
       where: {
         token: refreshToken,
+        userId: payload.uid,
         expiresAt: { gt: new Date() },
-      },
-      include: {
-        user: {
-          include: { profile: true },
-        },
       },
     });
 
-    if (!session || !session.user.isActive) {
+    if (!session) {
       res.clearCookie("auth_token");
       res.clearCookie("refresh_token");
 
       return res.status(401).json({
-        error: "Invalid session",
+        error: "Invalid or expired session",
         shouldLogout: true,
       });
     }
 
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens({
-      uid: session.user.id,
-      username: session.user.username,
-      role: session.user.role,
+    const user = await prisma.user.findUnique({
+      where: { id: payload.uid },
+      include: { profile: true },
     });
 
-    await prisma.session.update({
-      where: { id: session.id },
-      data: {
-        token: newRefreshToken,
-        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-      },
+    if (!user || !user.isActive) {
+      res.clearCookie("auth_token");
+      res.clearCookie("refresh_token");
+
+      return res.status(401).json({
+        error: "User not found or inactive",
+        shouldLogout: true,
+      });
+    }
+
+    const { accessToken: newAccessToken } = generateTokens({
+      uid: user.id,
+      username: user.username,
+      role: user.role,
     });
 
-    res.cookie("auth_token", accessToken, cookieConfig);
-    res.cookie("refresh_token", newRefreshToken, cookieConfig);
-
-    console.log(`✅ Token refreshed for user: ${session.user.username}`);
+    res.cookie("auth_token", newAccessToken, cookieConfig);
 
     return res.json({
       message: "Token refreshed successfully",
-      user: sanitizeUser(session.user),
+      user: sanitizeUser(user),
     });
   } catch (error) {
     console.error("Token refresh error:", error);
-    return res.status(401).json({
+
+    res.clearCookie("auth_token");
+    res.clearCookie("refresh_token");
+
+    return res.status(500).json({
       error: "Token refresh failed",
       shouldLogout: true,
     });
   }
 });
 
-// ===== QR Code Login - Generate Token =====
+// ===== QR Code Generation =====
 router.post("/qr/generate", async (req, res) => {
   try {
-    // First authenticate the user using the same logic as /me
+    const qrToken = `qr_${nanoid(32)}`;
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    await prisma.session.create({
+      data: {
+        userId: null,
+        token: qrToken,
+        expiresAt,
+      },
+    });
+
+    const qrCodeUrl = await QRCode.toDataURL(
+      JSON.stringify({
+        token: qrToken,
+        timestamp: Date.now(),
+      })
+    );
+
+    return res.json({
+      qrToken,
+      qrCodeUrl,
+      expiresAt,
+    });
+  } catch (error) {
+    console.error("QR generation error:", error);
+    return res.status(500).json({ error: "Failed to generate QR code" });
+  }
+});
+
+// ===== QR Code Login =====
+router.post("/qr/login", async (req, res) => {
+  try {
+    const { qrToken } = req.body;
     const token = req.cookies?.auth_token || req.headers.authorization?.replace("Bearer ", "");
 
     if (!token) {
       return res.status(401).json({ error: "Authentication required" });
+    }
+
+    if (!qrToken) {
+      return res.status(400).json({ error: "QR token required" });
     }
 
     let payload;
@@ -346,88 +427,63 @@ router.post("/qr/generate", async (req, res) => {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    const userId = payload.uid;
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { username: true },
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const existingQrToken = await prisma.session.findFirst({
+    const session = await prisma.session.findFirst({
       where: {
-        userId,
-        token: { startsWith: "qr_" },
+        token: qrToken,
+        userId: null,
         expiresAt: { gt: new Date() },
       },
     });
 
-    let qrToken: string;
-
-    if (existingQrToken) {
-      qrToken = existingQrToken.token.replace("qr_", "");
-      console.log("Using existing QR token for:", user.username);
-    } else {
-      qrToken = nanoid(32);
-
-      await prisma.session.create({
-        data: {
-          userId,
-          token: `qr_${qrToken}`,
-          expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
-        },
+    if (!session) {
+      return res.status(404).json({
+        error: "QR code expired or invalid",
+        message: "QR code หมดอายุหรือไม่ถูกต้อง",
       });
-
-      console.log("New QR token created for:", user.username);
     }
 
-    const qrData = JSON.stringify({
-      token: qrToken,
-      username: user.username,
-      timestamp: Date.now(),
+    const user = await prisma.user.findUnique({
+      where: { id: payload.uid },
+      include: { profile: true },
     });
 
-    const qrCodeUrl = await QRCode.toDataURL(qrData, {
-      errorCorrectionLevel: "M",
-      width: 300,
+    if (!user || !user.isActive) {
+      return res.status(401).json({ error: "User not found or inactive" });
+    }
+
+    const { refreshToken } = generateTokens({
+      uid: user.id,
+      username: user.username,
+      role: user.role,
     });
 
-    res.json({
-      qrCode: qrCodeUrl,
-      qrToken,
-      username: user.username,
-      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        userId: user.id,
+        token: refreshToken,
+        expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    return res.json({
+      message: "QR login successful",
+      user: sanitizeUser(user),
     });
   } catch (error) {
-    console.error("QR generate error:", error);
-    res.status(500).json({ error: "Failed to generate QR code" });
+    console.error("QR login error:", error);
+    return res.status(500).json({ error: "QR login failed" });
   }
 });
 
-// ===== QR Code Login - Verify & Auto Login =====
-router.post("/qr/login", authLimiter, async (req, res) => {
+// ===== QR Status Check =====
+router.get("/qr/status/:qrToken", async (req, res) => {
   try {
-    const { qrData } = req.body;
-
-    if (!qrData) {
-      return res.status(400).json({ error: "QR data required" });
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(qrData);
-    } catch {
-      return res.status(400).json({ error: "Invalid QR code" });
-    }
-
-    const { token, username } = parsed;
+    const { qrToken } = req.params;
 
     const session = await prisma.session.findFirst({
       where: {
-        token: `qr_${token}`,
-        expiresAt: { gt: new Date() },
+        token: { in: [qrToken, `qr_${qrToken}`] },
       },
       include: {
         user: {
@@ -436,12 +492,33 @@ router.post("/qr/login", authLimiter, async (req, res) => {
       },
     });
 
-    if (!session || !session.user.isActive) {
-      return res.status(401).json({ error: "Invalid or expired QR code" });
+    if (!session) {
+      return res.status(404).json({
+        status: "not_found",
+        message: "QR session not found",
+      });
     }
 
-    if (session.user.username !== username) {
-      return res.status(401).json({ error: "QR code mismatch" });
+    if (session.expiresAt < new Date()) {
+      await prisma.session.delete({ where: { id: session.id } });
+      return res.json({
+        status: "expired",
+        message: "QR code expired",
+      });
+    }
+
+    if (!session.userId) {
+      return res.json({
+        status: "pending",
+        message: "Waiting for scan",
+      });
+    }
+
+    if (!session.user) {
+      return res.status(500).json({
+        status: "error",
+        message: "User data not found",
+      });
     }
 
     const { accessToken, refreshToken } = generateTokens({
@@ -450,122 +527,33 @@ router.post("/qr/login", authLimiter, async (req, res) => {
       role: session.user.role,
     });
 
-    await prisma.session.deleteMany({
-      where: {
-        userId: session.user.id,
-        token: { not: { startsWith: "qr_" } },
-      },
-    });
+    res.cookie("auth_token", accessToken, cookieConfig);
+    res.cookie("refresh_token", refreshToken, cookieConfig);
 
-    await prisma.session.create({
+    await prisma.session.update({
+      where: { id: session.id },
       data: {
-        userId: session.user.id,
         token: refreshToken,
         expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
       },
     });
 
-    await prisma.user.update({
-      where: { id: session.user.id },
-      data: { lastLoginAt: new Date() },
-    });
-
-    res.cookie("auth_token", accessToken, cookieConfig);
-    res.cookie("refresh_token", refreshToken, cookieConfig);
-
     return res.json({
+      status: "success",
+      message: "Login successful",
       user: sanitizeUser(session.user),
-      message: "เข้าสู่ระบบด้วย QR Code สำเร็จ",
     });
   } catch (error) {
-    console.error("QR login error:", error);
-    return res.status(500).json({ error: "QR login failed" });
-  }
-});
-
-// ===== Revoke QR Token =====
-router.post("/qr/revoke", async (req, res) => {
-  try {
-    const token = req.cookies?.auth_token || req.headers.authorization?.replace("Bearer ", "");
-
-    if (!token) {
-      return res.status(401).json({ error: "Authentication required" });
-    }
-
-    let payload;
-    try {
-      payload = verifyAccessToken(token);
-    } catch (error) {
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
-    const userId = payload.uid;
-
-    const result = await prisma.session.deleteMany({
-      where: {
-        userId,
-        token: { startsWith: "qr_" },
-      },
+    console.error("QR status check error:", error);
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to check QR status",
     });
-
-    res.json({
-      message: "QR token revoked successfully",
-      deletedCount: result.count,
-    });
-  } catch (error) {
-    console.error("QR revoke error:", error);
-    res.status(500).json({ error: "Failed to revoke QR token" });
-  }
-});
-
-// ===== Get Active QR Token =====
-router.get("/qr/active", async (req, res) => {
-  try {
-    const token = req.cookies?.auth_token || req.headers.authorization?.replace("Bearer ", "");
-
-    if (!token) {
-      return res.status(401).json({ error: "Authentication required" });
-    }
-
-    let payload;
-    try {
-      payload = verifyAccessToken(token);
-    } catch (error) {
-      return res.status(401).json({ error: "Invalid token" });
-    }
-
-    const userId = payload.uid;
-
-    const activeQrToken = await prisma.session.findFirst({
-      where: {
-        userId,
-        token: { startsWith: "qr_" },
-        expiresAt: { gt: new Date() },
-      },
-      select: {
-        token: true,
-        expiresAt: true,
-        createdAt: true,
-      },
-    });
-
-    if (!activeQrToken) {
-      return res.json({ hasActiveToken: false });
-    }
-
-    res.json({
-      hasActiveToken: true,
-      createdAt: activeQrToken.createdAt,
-      expiresAt: activeQrToken.expiresAt,
-    });
-  } catch (error) {
-    console.error("Get active QR token error:", error);
-    res.status(500).json({ error: "Failed to get active QR token" });
   }
 });
 
 // ===== Anonymous Login =====
-router.post("/anonymous", authLimiter, async (req, res) => {
+router.post("/anonymous", async (req, res) => {
   try {
     const { preferredLang = "th" } = req.body;
 
@@ -637,7 +625,6 @@ router.post("/google", authLimiter, async (req, res) => {
     });
 
     if (user) {
-      // User exists - Sign In
       if (!user.isActive) {
         return res.status(401).json({
           error: "Account is deactivated",
@@ -665,7 +652,6 @@ router.post("/google", authLimiter, async (req, res) => {
         include: { profile: true },
       })) as any;
     } else {
-      // New user - Sign Up
       let username = email?.split("@")[0] || `user_${firebaseUid.substring(0, 8)}`;
 
       const existingUsername = await prisma.user.findUnique({
